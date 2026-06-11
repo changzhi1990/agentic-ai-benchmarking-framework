@@ -131,6 +131,8 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("start_background_memory_workers", script)
         self.assertIn("stop_background_memory_workers", script)
         self.assertIn("aab-memory-burner", script)
+        self.assertIn("AAB_MEMORY_WORKERS:-4", script)
+        self.assertIn("AAB_MEMORY_MB:-512", script)
         self.assertIn("dd if=/dev/zero", script)
         self.assertIn("vllm_health", script)
         self.assertIn("status", script)
