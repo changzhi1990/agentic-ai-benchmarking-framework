@@ -40,6 +40,7 @@ sudo mkdir -p "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants"
 sudo ln -sf /etc/systemd/system/aab-guest-agent.service \
   "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants/aab-guest-agent.service"
 sudo mkdir -p "${MOUNT_DIR}/var/lib/aab"
+sudo rm -f "${MOUNT_DIR}/var/lib/aab/result.json" "${MOUNT_DIR}/var/lib/aab/trace.jsonl"
 sudo sync
 
 echo "Customized ${ROOTFS_IMAGE} with aab-guest-agent.service"
