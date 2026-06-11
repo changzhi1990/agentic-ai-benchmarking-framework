@@ -12,6 +12,7 @@ from .firecracker import (
     spec_to_dict,
     write_vm_config,
 )
+from .firecracker_sweep import prepare_firecracker_run
 from .guest_agent import run_noop_agent
 from .vllm import (
     VllmDockerConfig,
@@ -44,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     plan_parser.add_argument("--out-dir", required=True)
     plan_parser.add_argument("--vcpu-count", type=int, default=2)
     plan_parser.add_argument("--mem-mib", type=int, default=1024)
+    plan_parser.add_argument("--tasks-per-vm", type=int, default=1)
+    plan_parser.add_argument("--request-workers", type=int, default=1)
 
     preflight_parser = subparsers.add_parser("firecracker-preflight")
     preflight_parser.add_argument("--firecracker-bin", default=None)
@@ -54,6 +57,17 @@ def main(argv: list[str] | None = None) -> int:
     guest_parser.add_argument("--vm-id", required=True)
     guest_parser.add_argument("--host-vllm-url", required=True)
     guest_parser.add_argument("--output", required=True)
+
+    prepare_parser = subparsers.add_parser("prepare-firecracker-run")
+    prepare_parser.add_argument("--out-dir", required=True)
+    prepare_parser.add_argument("--vm-count", type=int, required=True)
+    prepare_parser.add_argument("--kernel-image", required=True)
+    prepare_parser.add_argument("--base-rootfs-image", required=True)
+    prepare_parser.add_argument("--host-vllm-url", default="http://172.16.0.1:8000/v1")
+    prepare_parser.add_argument("--tasks-per-vm", type=int, default=1)
+    prepare_parser.add_argument("--request-workers", type=int, default=1)
+    prepare_parser.add_argument("--vcpu-count", type=int, default=2)
+    prepare_parser.add_argument("--mem-mib", type=int, default=1024)
 
     args = parser.parse_args(argv)
 
@@ -96,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
             host_ip=args.host_ip,
             vcpu_count=args.vcpu_count,
             mem_mib=args.mem_mib,
+            tasks_per_vm=args.tasks_per_vm,
+            request_workers=args.request_workers,
         )
         manifest = []
         for spec in specs:
@@ -144,6 +160,26 @@ def main(argv: list[str] | None = None) -> int:
                     vm_id=args.vm_id,
                     host_vllm_url=args.host_vllm_url,
                     output_path=args.output,
+                ),
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if args.command == "prepare-firecracker-run":
+        print(
+            json.dumps(
+                prepare_firecracker_run(
+                    out_dir=args.out_dir,
+                    vm_count=args.vm_count,
+                    kernel_image=args.kernel_image,
+                    base_rootfs_image=args.base_rootfs_image,
+                    host_vllm_url=args.host_vllm_url,
+                    tasks_per_vm=args.tasks_per_vm,
+                    request_workers=args.request_workers,
+                    vcpu_count=args.vcpu_count,
+                    mem_mib=args.mem_mib,
                 ),
                 indent=2,
                 sort_keys=True,

@@ -6,8 +6,10 @@ import unittest
 from pathlib import Path
 
 from aab_framework.firecracker import FirecrackerAgentSpec, FirecrackerPaths, build_vm_config, plan_agents
+from aab_framework.firecracker_sweep import prepare_firecracker_run
 from aab_framework.guest_agent import run_noop_agent
 from aab_framework.rootfs import build_guest_agent_script, build_guest_systemd_unit
+from aab_framework.sweep import plan_role_separated_sweep
 from aab_framework.vllm import (
     VllmDockerConfig,
     build_vllm_container_command,
@@ -77,6 +79,8 @@ class ScaffoldTests(unittest.TestCase):
             host_vllm_url="http://172.16.0.1:8000/v1",
             vcpu_count=2,
             mem_mib=1024,
+            tasks_per_vm=3,
+            request_workers=1,
         )
         paths = FirecrackerPaths(
             kernel_image="/opt/firecracker/vmlinux",
@@ -94,6 +98,7 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("agent.vm_id=agent-000", config["boot-source"]["boot_args"])
         self.assertIn("agent.host_vllm_url=http://172.16.0.1:8000/v1", config["boot-source"]["boot_args"])
         self.assertIn("ip=172.16.0.10::172.16.0.1:255.255.255.0::eth0:off", config["boot-source"]["boot_args"])
+        self.assertIn("agent.tasks_per_vm=3", config["boot-source"]["boot_args"])
 
     def test_noop_guest_agent_writes_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -117,6 +122,9 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("agent.host_vllm_url", script)
         self.assertIn("/var/lib/aab/result.json", script)
         self.assertIn("/models", script)
+        self.assertIn("/chat/completions", script)
+        self.assertIn("coding_bugfix", script)
+        self.assertIn("tasks_per_vm", script)
         self.assertIn("vllm_health", script)
         self.assertIn("status", script)
 
@@ -127,6 +135,40 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("After=network-online.target", unit)
         self.assertIn("ExecStart=/usr/local/bin/aab-guest-agent", unit)
         self.assertIn("WantedBy=multi-user.target", unit)
+
+    def test_role_separated_sweep_caps_request_workers(self) -> None:
+        rows = plan_role_separated_sweep([2, 4, 8, 16, 32, 64, 128, 192, 256])
+
+        self.assertEqual(rows[0].agents, 2)
+        self.assertEqual(rows[0].request_workers, 2)
+        self.assertEqual(rows[-1].agents, 256)
+        self.assertEqual(rows[-1].request_workers, 2)
+        self.assertGreater(rows[-1].vm_count, rows[0].vm_count)
+        self.assertGreater(rows[-1].total_tasks, rows[0].total_tasks)
+
+    def test_prepare_firecracker_run_creates_per_vm_rootfs_and_configs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            kernel = root / "vmlinux"
+            rootfs = root / "rootfs.ext4"
+            kernel.write_text("kernel", encoding="utf-8")
+            rootfs.write_bytes(b"rootfs")
+
+            manifest = prepare_firecracker_run(
+                out_dir=root / "run",
+                vm_count=2,
+                kernel_image=kernel,
+                base_rootfs_image=rootfs,
+                host_vllm_url="http://172.16.0.1:8000/v1",
+                tasks_per_vm=3,
+                request_workers=1,
+            )
+
+            self.assertEqual(len(manifest["agents"]), 2)
+            self.assertTrue((root / "run" / "agent-000.rootfs.ext4").exists())
+            self.assertTrue((root / "run" / "agent-001.rootfs.ext4").exists())
+            self.assertTrue((root / "run" / "agent-000.json").exists())
+            self.assertEqual(manifest["agents"][0]["tasks_per_vm"], 3)
 
 
 if __name__ == "__main__":

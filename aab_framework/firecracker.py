@@ -17,6 +17,8 @@ class FirecrackerAgentSpec:
     host_vllm_url: str
     vcpu_count: int = 2
     mem_mib: int = 1024
+    tasks_per_vm: int = 1
+    request_workers: int = 1
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,8 @@ def plan_agents(
     host_ip: str = "172.16.0.1",
     vcpu_count: int = 2,
     mem_mib: int = 1024,
+    tasks_per_vm: int = 1,
+    request_workers: int = 1,
 ) -> list[FirecrackerAgentSpec]:
     if vm_count < 1:
         raise ValueError("vm_count must be >= 1")
@@ -70,6 +74,8 @@ def plan_agents(
                 host_vllm_url=host_vllm_url,
                 vcpu_count=vcpu_count,
                 mem_mib=mem_mib,
+                tasks_per_vm=tasks_per_vm,
+                request_workers=request_workers,
             )
         )
     return specs
@@ -87,6 +93,8 @@ def build_vm_config(spec: FirecrackerAgentSpec, paths: FirecrackerPaths) -> dict
             f"agent.guest_ip={spec.guest_ip}",
             f"agent.host_ip={spec.host_ip}",
             f"agent.host_vllm_url={spec.host_vllm_url}",
+            f"agent.tasks_per_vm={spec.tasks_per_vm}",
+            f"agent.request_workers={spec.request_workers}",
         ]
     )
     return {
@@ -119,6 +127,8 @@ def build_vm_config(spec: FirecrackerAgentSpec, paths: FirecrackerPaths) -> dict
             "guest_ip": spec.guest_ip,
             "host_ip": spec.host_ip,
             "host_vllm_url": spec.host_vllm_url,
+            "tasks_per_vm": spec.tasks_per_vm,
+            "request_workers": spec.request_workers,
         },
     }
 
