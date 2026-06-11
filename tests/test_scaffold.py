@@ -116,6 +116,8 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("agent.vm_id", script)
         self.assertIn("agent.host_vllm_url", script)
         self.assertIn("/var/lib/aab/result.json", script)
+        self.assertIn("/models", script)
+        self.assertIn("vllm_health", script)
         self.assertIn("status", script)
 
     def test_guest_systemd_unit_runs_agent_script(self) -> None:

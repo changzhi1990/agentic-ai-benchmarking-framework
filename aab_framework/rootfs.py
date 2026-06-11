@@ -23,6 +23,27 @@ guest_ip="$(value_from_cmdline agent.guest_ip)"
 host_ip="$(value_from_cmdline agent.host_ip)"
 host_vllm_url="$(value_from_cmdline agent.host_vllm_url)"
 timestamp_unix="$(date +%s)"
+models_url="${host_vllm_url%/}/models"
+vllm_health="unavailable"
+vllm_models_payload=""
+if command -v curl >/dev/null 2>&1; then
+  if vllm_models_payload="$(curl -fsS --max-time 5 "${models_url}" 2>/tmp/aab-vllm-probe.err)"; then
+    vllm_health="ok"
+  else
+    vllm_health="error"
+    vllm_models_payload="$(cat /tmp/aab-vllm-probe.err 2>/dev/null || true)"
+  fi
+elif command -v wget >/dev/null 2>&1; then
+  if vllm_models_payload="$(wget -q -T 5 -O - "${models_url}" 2>/tmp/aab-vllm-probe.err)"; then
+    vllm_health="ok"
+  else
+    vllm_health="error"
+    vllm_models_payload="$(cat /tmp/aab-vllm-probe.err 2>/dev/null || true)"
+  fi
+else
+  vllm_models_payload="curl_or_wget_not_found"
+fi
+vllm_models_payload_escaped="$(printf '%s' "${vllm_models_payload}" | tr '\\n' ' ' | sed 's/"/\\\\"/g' | cut -c 1-2048)"
 
 mkdir -p /var/lib/aab
 cat > /var/lib/aab/result.json <<EOF
@@ -33,6 +54,9 @@ cat > /var/lib/aab/result.json <<EOF
   "host_vllm_url": "${host_vllm_url}",
   "status": "ready",
   "timestamp_unix": ${timestamp_unix},
+  "vllm_health": "${vllm_health}",
+  "vllm_models_url": "${models_url}",
+  "vllm_models_payload": "${vllm_models_payload_escaped}",
   "vm_id": "${vm_id}"
 }
 EOF
