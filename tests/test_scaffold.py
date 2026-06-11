@@ -125,6 +125,8 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("/chat/completions", script)
         self.assertIn("coding_bugfix", script)
         self.assertIn("tasks_per_vm", script)
+        self.assertIn("memory_rounds", script)
+        self.assertIn("dd if=/dev/zero", script)
         self.assertIn("vllm_health", script)
         self.assertIn("status", script)
 

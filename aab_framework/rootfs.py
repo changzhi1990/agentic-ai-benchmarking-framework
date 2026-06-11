@@ -26,6 +26,8 @@ tasks_per_vm="$(value_from_cmdline agent.tasks_per_vm)"
 request_workers="$(value_from_cmdline agent.request_workers)"
 tasks_per_vm="${tasks_per_vm:-1}"
 request_workers="${request_workers:-1}"
+memory_rounds="${AAB_MEMORY_ROUNDS:-16}"
+memory_mb="${AAB_MEMORY_MB:-128}"
 timestamp_unix="$(date +%s)"
 models_url="${host_vllm_url%/}/models"
 chat_url="${host_vllm_url%/}/chat/completions"
@@ -61,6 +63,20 @@ mkdir -p /var/lib/aab
 run_task() {
   task_id="$1"
   started_ms="$(date +%s%3N 2>/dev/null || echo 0)"
+  memory_dir="/dev/shm"
+  if [ ! -d "${memory_dir}" ]; then memory_dir="/tmp"; fi
+  memory_file="${memory_dir}/${task_id}.memory.bin"
+  memory_bytes=$((memory_mb * 1024 * 1024))
+  memory_touched_bytes=0
+  dd if=/dev/zero of="${memory_file}" bs=1M count="${memory_mb}" conv=fsync >/dev/null 2>&1 || true
+  round=0
+  while [ "${round}" -lt "${memory_rounds}" ]; do
+    cat "${memory_file}" >/dev/null 2>&1 || true
+    cksum "${memory_file}" >/dev/null 2>&1 || true
+    dd if=/dev/zero of="${memory_file}" bs=1M count="${memory_mb}" conv=notrunc >/dev/null 2>&1 || true
+    memory_touched_bytes=$((memory_touched_bytes + memory_bytes * 3))
+    round=$((round + 1))
+  done
   prompt="You are a coding bugfix agent. Diagnose this synthetic bug and propose a minimal patch plan. Task ${task_id}: retry_state is not persisted after timeout. Return concise JSON fields diagnosis, patch_plan, verification."
   payload="$(cat <<EOF_PAYLOAD
 {"model":"/workspace/models/Qwen2.5-Coder-32B-Instruct/","messages":[{"role":"system","content":"You are a coding bugfix agent."},{"role":"user","content":"${prompt}"}],"temperature":0.1,"max_tokens":128}
@@ -89,8 +105,9 @@ EOF_PAYLOAD
     latency_ms=$((ended_ms - started_ms))
   fi
   response_chars="$(printf '%s' "${response}" | wc -c | tr -d ' ')"
-  printf '{"task_id":"%s","workload":"coding_bugfix","status":"%s","latency_ms":%s,"response_chars":%s}\\n' \
-    "${task_id}" "${status}" "${latency_ms}" "${response_chars}" >> "${trace_path}"
+  printf '{"task_id":"%s","workload":"coding_bugfix","status":"%s","latency_ms":%s,"response_chars":%s,"memory_rounds":%s,"memory_mb":%s,"memory_touched_bytes":%s}\\n' \
+    "${task_id}" "${status}" "${latency_ms}" "${response_chars}" "${memory_rounds}" "${memory_mb}" "${memory_touched_bytes}" >> "${trace_path}"
+  rm -f "${memory_file}" >/dev/null 2>&1 || true
   last_latency_ms="${latency_ms}"
   if [ "${first_latency_ms}" = "0" ]; then first_latency_ms="${latency_ms}"; fi
   if [ "${status}" = "ok" ]; then
@@ -114,6 +131,8 @@ cat > /var/lib/aab/result.json <<EOF
   "guest_ip": "${guest_ip}",
   "host_ip": "${host_ip}",
   "host_vllm_url": "${host_vllm_url}",
+  "memory_mb": ${memory_mb},
+  "memory_rounds": ${memory_rounds},
   "request_workers": ${request_workers},
   "status": "ready",
   "tasks_per_vm": ${tasks_per_vm},

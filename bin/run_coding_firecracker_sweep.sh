@@ -41,6 +41,51 @@ start_gpu_metrics() {
   GPU_METRICS_PID="$!"
 }
 
+start_cpu_metrics() {
+  local run_dir="$1"
+  mkdir -p "${run_dir}/metrics"
+  (
+    echo "timestamp,cpu_util_pct,user_pct,system_pct,iowait_pct,idle_pct,load1,load5,load15"
+    prev_total=""
+    prev_idle=""
+    while true; do
+      read -r _ user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat
+      total=$((user + nice + system + idle + iowait + irq + softirq + steal))
+      idle_all=$((idle + iowait))
+      if [[ -n "${prev_total}" ]]; then
+        total_delta=$((total - prev_total))
+        idle_delta=$((idle_all - prev_idle))
+        user_delta=$((user - prev_user))
+        system_delta=$((system - prev_system))
+        iowait_delta=$((iowait - prev_iowait))
+        if [[ "${total_delta}" -gt 0 ]]; then
+          cpu_util="$(awk -v t="${total_delta}" -v i="${idle_delta}" 'BEGIN { printf "%.4f", 100*(1-i/t) }')"
+          user_pct="$(awk -v t="${total_delta}" -v v="${user_delta}" 'BEGIN { printf "%.4f", 100*v/t }')"
+          system_pct="$(awk -v t="${total_delta}" -v v="${system_delta}" 'BEGIN { printf "%.4f", 100*v/t }')"
+          iowait_pct="$(awk -v t="${total_delta}" -v v="${iowait_delta}" 'BEGIN { printf "%.4f", 100*v/t }')"
+          idle_pct="$(awk -v t="${total_delta}" -v v="${idle_delta}" 'BEGIN { printf "%.4f", 100*v/t }')"
+          read -r load1 load5 load15 _ < /proc/loadavg
+          echo "$(date +%s),${cpu_util},${user_pct},${system_pct},${iowait_pct},${idle_pct},${load1},${load5},${load15}"
+        fi
+      fi
+      prev_total="${total}"
+      prev_idle="${idle_all}"
+      prev_user="${user}"
+      prev_system="${system}"
+      prev_iowait="${iowait}"
+      sleep 1
+    done
+  ) > "${run_dir}/metrics/cpu.csv" &
+  CPU_METRICS_PID="$!"
+}
+
+stop_cpu_metrics() {
+  if [[ -n "${CPU_METRICS_PID:-}" ]]; then
+    kill "${CPU_METRICS_PID}" >/dev/null 2>&1 || true
+    wait "${CPU_METRICS_PID}" >/dev/null 2>&1 || true
+  fi
+}
+
 stop_gpu_metrics() {
   if [[ -n "${GPU_METRICS_PID:-}" ]]; then
     kill "${GPU_METRICS_PID}" >/dev/null 2>&1 || true
@@ -88,9 +133,11 @@ for agents in ${AGENTS_LIST}; do
     --vcpu-count 2 \
     --mem-mib 1024 >/dev/null
   start_gpu_metrics "${run_dir}"
+  start_cpu_metrics "${run_dir}"
   start_pcm "${run_dir}"
   RUN_DIR="${run_dir}" RUN_SECONDS="${RUN_SECONDS}" SUDO_PASSWORD="${SUDO_PASSWORD}" ./bin/run_prepared_firecracker_agents.sh | tee "${run_dir}/run.log"
   stop_pcm
+  stop_cpu_metrics
   stop_gpu_metrics
   echo "===== END agents=${agents} ====="
 done
