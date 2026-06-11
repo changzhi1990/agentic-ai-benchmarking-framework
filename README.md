@@ -80,3 +80,39 @@ with what success rate, latency, resource cost, and isolation overhead?
 
 See [docs/methodology.md](docs/methodology.md) for the full methodology.
 
+## First Scaffold
+
+This repository also includes an initial implementation scaffold:
+
+```text
+aab_framework/
+  vllm.py          Docker vLLM command builder
+  firecracker.py   Firecracker agent VM planning and config generation
+  guest_agent.py   no-op guest agent placeholder
+  cli.py           command line interface
+
+bin/
+  start_vllm_8x5090.sh
+  plan_firecracker_agents.sh
+```
+
+Example commands:
+
+```bash
+python3 -m aab_framework.cli vllm-docker-command \
+  --model /home/user/models/Qwen2.5-Coder-32B-Instruct \
+  --tp 8
+
+python3 -m aab_framework.cli firecracker-preflight \
+  --kernel-image /opt/firecracker/vmlinux \
+  --rootfs-image /opt/firecracker/rootfs.ext4
+
+python3 -m aab_framework.cli plan-firecracker-agents \
+  --vm-count 4 \
+  --host-vllm-url http://172.16.0.1:8000/v1 \
+  --kernel-image /opt/firecracker/vmlinux \
+  --rootfs-image /opt/firecracker/rootfs.ext4 \
+  --out-dir runs/firecracker-plan
+```
+
+The first scaffold does not implement real agent task logic yet. The guest agent is a no-op readiness placeholder, intended to validate executor wiring before adding coding, SRE, security, or data-analysis workloads.
