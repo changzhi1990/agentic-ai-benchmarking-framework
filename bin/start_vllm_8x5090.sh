@@ -21,10 +21,23 @@ COMMAND=$(
     --port "${PORT}" \
   | sed -n '1p'
 )
+SERVE_COMMAND=$(
+  python3 -m aab_framework.cli vllm-docker-command \
+    --model "${MODEL}" \
+    --image "${IMAGE}" \
+    --served-model-name "${SERVED_MODEL_NAME}" \
+    --api-key "${API_KEY}" \
+    --tp "${TP}" \
+    --port "${PORT}" \
+  | sed -n '2p'
+)
 
 COMMAND="${COMMAND/aab-vllm/${CONTAINER_NAME}}"
+SERVE_COMMAND="${SERVE_COMMAND/aab-vllm/${CONTAINER_NAME}}"
 echo "${COMMAND}"
 eval "${COMMAND}"
+echo "${SERVE_COMMAND}"
+eval "${SERVE_COMMAND}"
 
 for _ in $(seq 1 300); do
   if curl -fsS "http://127.0.0.1:${PORT}/v1/models" \

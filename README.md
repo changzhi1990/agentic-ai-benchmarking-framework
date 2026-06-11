@@ -116,3 +116,12 @@ python3 -m aab_framework.cli plan-firecracker-agents \
 ```
 
 The first scaffold does not implement real agent task logic yet. The guest agent is a no-op readiness placeholder, intended to validate executor wiring before adding coding, SRE, security, or data-analysis workloads.
+
+The vLLM launcher uses a two-step Docker flow for better stability on the 8x5090 test server:
+
+```text
+1. Start a privileged NVIDIA Docker container with /usr/bin/bash as entrypoint.
+2. Run `vllm serve ...` inside that container with `docker exec`.
+```
+
+This mirrors the manually validated launch pattern for the 5090 server and avoids putting the `vllm serve` arguments directly on the `docker run` command line.

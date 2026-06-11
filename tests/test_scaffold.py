@@ -7,12 +7,16 @@ from pathlib import Path
 
 from aab_framework.firecracker import FirecrackerAgentSpec, FirecrackerPaths, build_vm_config, plan_agents
 from aab_framework.guest_agent import run_noop_agent
-from aab_framework.vllm import VllmDockerConfig, build_vllm_docker_command
+from aab_framework.vllm import (
+    VllmDockerConfig,
+    build_vllm_container_command,
+    build_vllm_serve_command,
+)
 
 
 class ScaffoldTests(unittest.TestCase):
     def test_build_vllm_docker_command_for_8x5090(self) -> None:
-        command = build_vllm_docker_command(
+        command = build_vllm_container_command(
             VllmDockerConfig(
                 model="/home/user/models/Qwen2.5-Coder-32B-Instruct",
                 image="vllm/vllm-openai:latest",
@@ -23,13 +27,33 @@ class ScaffoldTests(unittest.TestCase):
             )
         )
 
-        self.assertIn("docker run -d", command)
+        self.assertIn("docker run -itd", command)
         self.assertIn("--gpus all", command)
+        self.assertIn("--runtime=nvidia", command)
         self.assertIn("--network host", command)
-        self.assertIn("--tensor-parallel-size 8", command)
-        self.assertIn("--served-model-name agentic-model", command)
-        self.assertIn("--model /home/user/models/Qwen2.5-Coder-32B-Instruct", command)
+        self.assertIn("--ipc=host", command)
+        self.assertIn("--shm-size 128G", command)
+        self.assertIn("--entrypoint /usr/bin/bash", command)
+        self.assertIn("-v /home/user/models:/workspace/models", command)
         self.assertIn("vllm/vllm-openai:latest", command)
+
+    def test_build_vllm_serve_command_uses_container_model_path(self) -> None:
+        command = build_vllm_serve_command(
+            VllmDockerConfig(
+                model="/home/user/models/Qwen2.5-Coder-32B-Instruct",
+                tensor_parallel_size=8,
+            )
+        )
+
+        self.assertIn("docker exec -d aab-vllm", command)
+        self.assertIn("vllm serve /workspace/models/Qwen2.5-Coder-32B-Instruct/", command)
+        self.assertIn("--dtype half", command)
+        self.assertIn("--kv-cache-dtype auto", command)
+        self.assertIn("-tp 8", command)
+        self.assertIn("-pp 1", command)
+        self.assertIn("--max-num-seqs 128", command)
+        self.assertIn("--gpu-memory-utilization 0.9", command)
+        self.assertIn("--disable-log-requests", command)
 
     def test_plan_agents_assigns_unique_vm_ids_and_guest_ips(self) -> None:
         specs = plan_agents(

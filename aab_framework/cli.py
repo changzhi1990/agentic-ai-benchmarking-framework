@@ -13,7 +13,12 @@ from .firecracker import (
     write_vm_config,
 )
 from .guest_agent import run_noop_agent
-from .vllm import VllmDockerConfig, build_vllm_docker_command, build_vllm_healthcheck_command
+from .vllm import (
+    VllmDockerConfig,
+    build_vllm_container_command,
+    build_vllm_healthcheck_command,
+    build_vllm_serve_command,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -53,7 +58,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "vllm-docker-command":
         print(
-            build_vllm_docker_command(
+            build_vllm_container_command(
+                VllmDockerConfig(
+                    model=args.model,
+                    image=args.image,
+                    served_model_name=args.served_model_name,
+                    api_key=args.api_key,
+                    tensor_parallel_size=args.tp,
+                    port=args.port,
+                )
+            )
+        )
+        print(
+            build_vllm_serve_command(
                 VllmDockerConfig(
                     model=args.model,
                     image=args.image,
