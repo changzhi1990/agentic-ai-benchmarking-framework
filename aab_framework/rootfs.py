@@ -29,6 +29,7 @@ request_workers="${request_workers:-1}"
 memory_rounds="${AAB_MEMORY_ROUNDS:-16}"
 memory_mb="${AAB_MEMORY_MB:-128}"
 memory_workers="${AAB_MEMORY_WORKERS:-2}"
+background_memory_seconds="${AAB_BACKGROUND_MEMORY_SECONDS:-75}"
 timestamp_unix="$(date +%s)"
 models_url="${host_vllm_url%/}/models"
 chat_url="${host_vllm_url%/}/chat/completions"
@@ -81,6 +82,33 @@ run_memory_worker() {
   done
   rm -f "${memory_file}" >/dev/null 2>&1 || true
   printf '%s' "${touched}" > "${touched_file}"
+}
+
+background_pids=""
+start_background_memory_workers() {
+  if command -v aab-memory-burner >/dev/null 2>&1; then
+    aab-memory-burner --threads "${memory_workers}" --mb-per-thread "${memory_mb}" --seconds "${background_memory_seconds}" > /var/lib/aab/memory-burner.log 2>&1 &
+    background_pids="${background_pids} $!"
+    return 0
+  fi
+  worker=0
+  while [ "${worker}" -lt "${memory_workers}" ]; do
+    (
+      end_time=$(( $(date +%s) + background_memory_seconds ))
+      while [ "$(date +%s)" -lt "${end_time}" ]; do
+        run_memory_worker "bg-${worker}" "background-${vm_id}-$(date +%s)"
+      done
+    ) &
+    background_pids="${background_pids} $!"
+    worker=$((worker + 1))
+  done
+}
+
+stop_background_memory_workers() {
+  for pid in ${background_pids}; do
+    kill "${pid}" >/dev/null 2>&1 || true
+  done
+  wait >/dev/null 2>&1 || true
 }
 
 run_task() {
@@ -141,11 +169,13 @@ EOF_PAYLOAD
   fi
 }
 
+start_background_memory_workers
 task_index=0
 while [ "${task_index}" -lt "${tasks_per_vm}" ]; do
   run_task "${vm_id}-task-${task_index}"
   task_index=$((task_index + 1))
 done
+stop_background_memory_workers
 
 cat > /var/lib/aab/result.json <<EOF
 {
@@ -158,6 +188,7 @@ cat > /var/lib/aab/result.json <<EOF
   "memory_mb": ${memory_mb},
   "memory_rounds": ${memory_rounds},
   "memory_workers": ${memory_workers},
+  "background_memory_seconds": ${background_memory_seconds},
   "request_workers": ${request_workers},
   "status": "ready",
   "tasks_per_vm": ${tasks_per_vm},
@@ -191,3 +222,114 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def build_memory_burner_source() -> str:
+    return r'''#define _GNU_SOURCE
+#include <errno.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+typedef struct {
+    int id;
+    size_t elements;
+    int seconds;
+    double bandwidth_gbps;
+} worker_args_t;
+
+static double now_seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+}
+
+static void *worker_main(void *ptr) {
+    worker_args_t *args = (worker_args_t *)ptr;
+    size_t n = args->elements;
+    double *a = NULL;
+    double *b = NULL;
+    double *c = NULL;
+    const double scalar = 3.14159;
+    if (posix_memalign((void **)&a, 64, n * sizeof(double)) ||
+        posix_memalign((void **)&b, 64, n * sizeof(double)) ||
+        posix_memalign((void **)&c, 64, n * sizeof(double))) {
+        fprintf(stderr, "worker %d allocation failed: %s\n", args->id, strerror(errno));
+        free(a); free(b); free(c);
+        return NULL;
+    }
+    for (size_t i = 0; i < n; i++) {
+        a[i] = 0.0;
+        b[i] = (double)(i % 1024);
+        c[i] = (double)((i + 17) % 1024);
+    }
+    double start = now_seconds();
+    double end = start + (double)args->seconds;
+    uint64_t iterations = 0;
+    while (now_seconds() < end) {
+        for (size_t i = 0; i < n; i++) {
+            a[i] = b[i] + scalar * c[i];
+        }
+        double *tmp = b;
+        b = c;
+        c = a;
+        a = tmp;
+        iterations++;
+    }
+    double elapsed = now_seconds() - start;
+    double bytes = (double)iterations * (double)n * sizeof(double) * 3.0;
+    args->bandwidth_gbps = bytes / elapsed / 1000000000.0;
+    fprintf(stdout, "worker=%d iterations=%lu bandwidth_gbps=%.3f\n",
+            args->id, (unsigned long)iterations, args->bandwidth_gbps);
+    fflush(stdout);
+    free(a); free(b); free(c);
+    return NULL;
+}
+
+int main(int argc, char **argv) {
+    int threads = 2;
+    int mb_per_thread = 128;
+    int seconds = 60;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--threads") && i + 1 < argc) {
+            threads = atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--mb-per-thread") && i + 1 < argc) {
+            mb_per_thread = atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) {
+            seconds = atoi(argv[++i]);
+        }
+    }
+    if (threads < 1) threads = 1;
+    if (mb_per_thread < 1) mb_per_thread = 1;
+    if (seconds < 1) seconds = 1;
+    pthread_t * tids = calloc((size_t)threads, sizeof(pthread_t));
+    worker_args_t * args = calloc((size_t)threads, sizeof(worker_args_t));
+    if (!tids || !args) {
+        fprintf(stderr, "metadata allocation failed\n");
+        return 2;
+    }
+    size_t elements = ((size_t)mb_per_thread * 1024ULL * 1024ULL) / (sizeof(double) * 3ULL);
+    for (int i = 0; i < threads; i++) {
+        args[i].id = i;
+        args[i].elements = elements;
+        args[i].seconds = seconds;
+        if (pthread_create(&tids[i], NULL, worker_main, &args[i])) {
+            fprintf(stderr, "pthread_create failed for worker %d\n", i);
+            return 3;
+        }
+    }
+    double total = 0.0;
+    for (int i = 0; i < threads; i++) {
+        pthread_join(tids[i], NULL);
+        total += args[i].bandwidth_gbps;
+    }
+    fprintf(stdout, "total_bandwidth_gbps=%.3f threads=%d mb_per_thread=%d seconds=%d\n",
+            total, threads, mb_per_thread, seconds);
+    free(tids);
+    free(args);
+    return 0;
+}
+'''

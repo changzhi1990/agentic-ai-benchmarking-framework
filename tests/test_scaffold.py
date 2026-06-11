@@ -8,7 +8,7 @@ from pathlib import Path
 from aab_framework.firecracker import FirecrackerAgentSpec, FirecrackerPaths, build_vm_config, plan_agents
 from aab_framework.firecracker_sweep import prepare_firecracker_run
 from aab_framework.guest_agent import run_noop_agent
-from aab_framework.rootfs import build_guest_agent_script, build_guest_systemd_unit
+from aab_framework.rootfs import build_guest_agent_script, build_guest_systemd_unit, build_memory_burner_source
 from aab_framework.sweep import plan_role_separated_sweep
 from aab_framework.vllm import (
     VllmDockerConfig,
@@ -128,6 +128,9 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("memory_rounds", script)
         self.assertIn("memory_workers", script)
         self.assertIn("run_memory_worker", script)
+        self.assertIn("start_background_memory_workers", script)
+        self.assertIn("stop_background_memory_workers", script)
+        self.assertIn("aab-memory-burner", script)
         self.assertIn("dd if=/dev/zero", script)
         self.assertIn("vllm_health", script)
         self.assertIn("status", script)
@@ -139,6 +142,14 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("After=network-online.target", unit)
         self.assertIn("ExecStart=/usr/local/bin/aab-guest-agent", unit)
         self.assertIn("WantedBy=multi-user.target", unit)
+
+    def test_memory_burner_source_contains_stream_triad_loop(self) -> None:
+        source = build_memory_burner_source()
+
+        self.assertIn("pthread_create", source)
+        self.assertIn("mb_per_thread", source)
+        self.assertIn("seconds", source)
+        self.assertIn("a[i] = b[i] + scalar * c[i]", source)
 
     def test_role_separated_sweep_caps_request_workers(self) -> None:
         rows = plan_role_separated_sweep([2, 4, 8, 16, 32, 64, 128, 192, 256])
