@@ -13,6 +13,7 @@ class FirecrackerAgentSpec:
     vm_id: str
     tap_name: str
     guest_ip: str
+    host_ip: str
     host_vllm_url: str
     vcpu_count: int = 2
     mem_mib: int = 1024
@@ -51,6 +52,7 @@ def plan_agents(
     base_id: str,
     host_vllm_url: str,
     guest_ip_prefix: str,
+    host_ip: str = "172.16.0.1",
     vcpu_count: int = 2,
     mem_mib: int = 1024,
 ) -> list[FirecrackerAgentSpec]:
@@ -64,6 +66,7 @@ def plan_agents(
                 vm_id=vm_id,
                 tap_name=f"tap-{vm_id}",
                 guest_ip=f"{guest_ip_prefix}.{10 + index}",
+                host_ip=host_ip,
                 host_vllm_url=host_vllm_url,
                 vcpu_count=vcpu_count,
                 mem_mib=mem_mib,
@@ -79,8 +82,10 @@ def build_vm_config(spec: FirecrackerAgentSpec, paths: FirecrackerPaths) -> dict
             "reboot=k",
             "panic=1",
             "pci=off",
+            f"ip={spec.guest_ip}::{spec.host_ip}:255.255.255.0::eth0:off",
             f"agent.vm_id={spec.vm_id}",
             f"agent.guest_ip={spec.guest_ip}",
+            f"agent.host_ip={spec.host_ip}",
             f"agent.host_vllm_url={spec.host_vllm_url}",
         ]
     )
@@ -112,6 +117,7 @@ def build_vm_config(spec: FirecrackerAgentSpec, paths: FirecrackerPaths) -> dict
         "metadata": {
             "vm_id": spec.vm_id,
             "guest_ip": spec.guest_ip,
+            "host_ip": spec.host_ip,
             "host_vllm_url": spec.host_vllm_url,
         },
     }

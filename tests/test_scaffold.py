@@ -72,6 +72,7 @@ class ScaffoldTests(unittest.TestCase):
             vm_id="agent-000",
             tap_name="tap-agent-000",
             guest_ip="172.16.0.10",
+            host_ip="172.16.0.1",
             host_vllm_url="http://172.16.0.1:8000/v1",
             vcpu_count=2,
             mem_mib=1024,
@@ -91,6 +92,7 @@ class ScaffoldTests(unittest.TestCase):
         self.assertEqual(config["network-interfaces"][0]["host_dev_name"], "tap-agent-000")
         self.assertIn("agent.vm_id=agent-000", config["boot-source"]["boot_args"])
         self.assertIn("agent.host_vllm_url=http://172.16.0.1:8000/v1", config["boot-source"]["boot_args"])
+        self.assertIn("ip=172.16.0.10::172.16.0.1:255.255.255.0::eth0:off", config["boot-source"]["boot_args"])
 
     def test_noop_guest_agent_writes_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

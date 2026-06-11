@@ -38,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     plan_parser.add_argument("--base-id", default="agent")
     plan_parser.add_argument("--host-vllm-url", default="http://172.16.0.1:8000/v1")
     plan_parser.add_argument("--guest-ip-prefix", default="172.16.0")
+    plan_parser.add_argument("--host-ip", default="172.16.0.1")
     plan_parser.add_argument("--kernel-image", required=True)
     plan_parser.add_argument("--rootfs-image", required=True)
     plan_parser.add_argument("--out-dir", required=True)
@@ -92,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
             base_id=args.base_id,
             host_vllm_url=args.host_vllm_url,
             guest_ip_prefix=args.guest_ip_prefix,
+            host_ip=args.host_ip,
             vcpu_count=args.vcpu_count,
             mem_mib=args.mem_mib,
         )
