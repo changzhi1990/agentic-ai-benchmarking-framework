@@ -28,6 +28,7 @@ tasks_per_vm="${tasks_per_vm:-1}"
 request_workers="${request_workers:-1}"
 memory_rounds="${AAB_MEMORY_ROUNDS:-16}"
 memory_mb="${AAB_MEMORY_MB:-128}"
+memory_workers="${AAB_MEMORY_WORKERS:-2}"
 timestamp_unix="$(date +%s)"
 models_url="${host_vllm_url%/}/models"
 chat_url="${host_vllm_url%/}/chat/completions"
@@ -60,22 +61,46 @@ trace_path="/var/lib/aab/trace.jsonl"
 mkdir -p /var/lib/aab
 : > "${trace_path}"
 
-run_task() {
-  task_id="$1"
-  started_ms="$(date +%s%3N 2>/dev/null || echo 0)"
+run_memory_worker() {
+  worker_id="$1"
+  task_id="$2"
   memory_dir="/dev/shm"
   if [ ! -d "${memory_dir}" ]; then memory_dir="/tmp"; fi
-  memory_file="${memory_dir}/${task_id}.memory.bin"
+  memory_file="${memory_dir}/${task_id}.worker-${worker_id}.memory.bin"
+  touched_file="/tmp/${task_id}.worker-${worker_id}.touched"
   memory_bytes=$((memory_mb * 1024 * 1024))
-  memory_touched_bytes=0
+  touched=0
   dd if=/dev/zero of="${memory_file}" bs=1M count="${memory_mb}" conv=fsync >/dev/null 2>&1 || true
   round=0
   while [ "${round}" -lt "${memory_rounds}" ]; do
     cat "${memory_file}" >/dev/null 2>&1 || true
     cksum "${memory_file}" >/dev/null 2>&1 || true
     dd if=/dev/zero of="${memory_file}" bs=1M count="${memory_mb}" conv=notrunc >/dev/null 2>&1 || true
-    memory_touched_bytes=$((memory_touched_bytes + memory_bytes * 3))
+    touched=$((touched + memory_bytes * 3))
     round=$((round + 1))
+  done
+  rm -f "${memory_file}" >/dev/null 2>&1 || true
+  printf '%s' "${touched}" > "${touched_file}"
+}
+
+run_task() {
+  task_id="$1"
+  started_ms="$(date +%s%3N 2>/dev/null || echo 0)"
+  memory_touched_bytes=0
+  worker=0
+  while [ "${worker}" -lt "${memory_workers}" ]; do
+    run_memory_worker "${worker}" "${task_id}" &
+    worker=$((worker + 1))
+  done
+  wait
+  worker=0
+  while [ "${worker}" -lt "${memory_workers}" ]; do
+    touched_file="/tmp/${task_id}.worker-${worker}.touched"
+    if [ -f "${touched_file}" ]; then
+      memory_touched_bytes=$((memory_touched_bytes + $(cat "${touched_file}")))
+      rm -f "${touched_file}" >/dev/null 2>&1 || true
+    fi
+    worker=$((worker + 1))
   done
   prompt="You are a coding bugfix agent. Diagnose this synthetic bug and propose a minimal patch plan. Task ${task_id}: retry_state is not persisted after timeout. Return concise JSON fields diagnosis, patch_plan, verification."
   payload="$(cat <<EOF_PAYLOAD
@@ -107,7 +132,6 @@ EOF_PAYLOAD
   response_chars="$(printf '%s' "${response}" | wc -c | tr -d ' ')"
   printf '{"task_id":"%s","workload":"coding_bugfix","status":"%s","latency_ms":%s,"response_chars":%s,"memory_rounds":%s,"memory_mb":%s,"memory_touched_bytes":%s}\\n' \
     "${task_id}" "${status}" "${latency_ms}" "${response_chars}" "${memory_rounds}" "${memory_mb}" "${memory_touched_bytes}" >> "${trace_path}"
-  rm -f "${memory_file}" >/dev/null 2>&1 || true
   last_latency_ms="${latency_ms}"
   if [ "${first_latency_ms}" = "0" ]; then first_latency_ms="${latency_ms}"; fi
   if [ "${status}" = "ok" ]; then
@@ -133,6 +157,7 @@ cat > /var/lib/aab/result.json <<EOF
   "host_vllm_url": "${host_vllm_url}",
   "memory_mb": ${memory_mb},
   "memory_rounds": ${memory_rounds},
+  "memory_workers": ${memory_workers},
   "request_workers": ${request_workers},
   "status": "ready",
   "tasks_per_vm": ${tasks_per_vm},

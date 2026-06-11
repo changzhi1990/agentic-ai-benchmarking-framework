@@ -126,6 +126,8 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("coding_bugfix", script)
         self.assertIn("tasks_per_vm", script)
         self.assertIn("memory_rounds", script)
+        self.assertIn("memory_workers", script)
+        self.assertIn("run_memory_worker", script)
         self.assertIn("dd if=/dev/zero", script)
         self.assertIn("vllm_health", script)
         self.assertIn("status", script)

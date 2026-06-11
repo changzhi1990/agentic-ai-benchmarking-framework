@@ -130,8 +130,8 @@ for agents in ${AGENTS_LIST}; do
     --host-vllm-url "${HOST_VLLM_URL}" \
     --tasks-per-vm "${tasks_per_vm}" \
     --request-workers 1 \
-    --vcpu-count 2 \
-    --mem-mib 1024 >/dev/null
+    --vcpu-count 4 \
+    --mem-mib 2048 >/dev/null
   start_gpu_metrics "${run_dir}"
   start_cpu_metrics "${run_dir}"
   start_pcm "${run_dir}"
