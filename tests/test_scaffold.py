@@ -7,6 +7,7 @@ from pathlib import Path
 
 from aab_framework.firecracker import FirecrackerAgentSpec, FirecrackerPaths, build_vm_config, plan_agents
 from aab_framework.guest_agent import run_noop_agent
+from aab_framework.rootfs import build_guest_agent_script, build_guest_systemd_unit
 from aab_framework.vllm import (
     VllmDockerConfig,
     build_vllm_container_command,
@@ -108,6 +109,22 @@ class ScaffoldTests(unittest.TestCase):
             self.assertEqual(result["status"], "ready")
             self.assertEqual(written["vm_id"], "agent-000")
             self.assertEqual(written["host_vllm_url"], "http://172.16.0.1:8000/v1")
+
+    def test_guest_agent_script_contains_kernel_arg_parsing_and_output_path(self) -> None:
+        script = build_guest_agent_script()
+
+        self.assertIn("agent.vm_id", script)
+        self.assertIn("agent.host_vllm_url", script)
+        self.assertIn("/var/lib/aab/result.json", script)
+        self.assertIn("status", script)
+
+    def test_guest_systemd_unit_runs_agent_script(self) -> None:
+        unit = build_guest_systemd_unit()
+
+        self.assertIn("[Unit]", unit)
+        self.assertIn("After=network-online.target", unit)
+        self.assertIn("ExecStart=/usr/local/bin/aab-guest-agent", unit)
+        self.assertIn("WantedBy=multi-user.target", unit)
 
 
 if __name__ == "__main__":
