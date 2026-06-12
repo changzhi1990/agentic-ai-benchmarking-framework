@@ -36,6 +36,50 @@ The scripts still support packing multiple logical tasks into one VM via
 `AAB_AGENTS_PER_VM`, but the default remains `1` because it is the simplest
 isolation model.
 
+## Guest Agent Workflow
+
+Each Firecracker VM runs `/usr/local/bin/aab-guest-agent` through systemd. The
+guest agent is a synthetic coding-agent workflow, not a full repository repair
+benchmark.
+
+The VM-local workflow is:
+
+```text
+Firecracker VM boots
+  -> aab-guest-agent starts
+  -> reads kernel boot args
+  -> probes host vLLM /v1/models
+  -> starts the memory workflow
+  -> builds a synthetic coding bugfix prompt
+  -> calls host vLLM /v1/chat/completions
+  -> writes trace.jsonl
+  -> writes result.json
+  -> waits for the memory workflow
+  -> writes final result.json
+```
+
+The coding task is a synthetic bugfix diagnosis. It asks the model to diagnose
+a fixed issue, such as retry state not being persisted after a timeout, and to
+return concise `diagnosis`, `patch_plan`, and `verification` fields.
+
+The memory workflow represents the expensive context-building work that real
+coding agents do before calling an LLM, for example:
+
+- scanning source files
+- scanning logs and failing test output
+- ranking candidate files
+- reading context chunks into memory
+- compacting a context bundle for the prompt
+
+Today this pressure is implemented by the static `aab-memory-burner` helper.
+The default mode is `read`, which creates sustained host DRAM read pressure from
+inside each VM. Other modes, such as `triad`, `copy`, `scale`, `write`,
+`nt-write`, and `read8`, are available for experiments.
+
+The workflow therefore models a multi-tenant coding-agent server where many
+isolated agents simultaneously perform context construction and make short LLM
+calls to a shared host vLLM service.
+
 ## Key Metrics
 
 System metrics:
