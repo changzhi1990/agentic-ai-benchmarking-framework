@@ -31,7 +31,7 @@ from aab_framework.rootfs import build_memory_burner_source
 print(build_memory_burner_source(), end="")
 PY
 
-gcc -O3 -pthread "${tmpdir}/aab-memory-burner.c" -o "${tmpdir}/aab-memory-burner"
+gcc -O3 -static -pthread "${tmpdir}/aab-memory-burner.c" -o "${tmpdir}/aab-memory-burner"
 
 sudo mkdir -p "${MOUNT_DIR}"
 if mountpoint -q "${MOUNT_DIR}"; then

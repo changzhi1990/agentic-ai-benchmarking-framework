@@ -14,6 +14,7 @@ from .firecracker import (
 )
 from .firecracker_sweep import prepare_firecracker_run
 from .guest_agent import run_noop_agent
+from .metrics import summarize_firecracker_sweep
 from .vllm import (
     VllmDockerConfig,
     build_vllm_container_command,
@@ -40,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     plan_parser.add_argument("--host-vllm-url", default="http://172.16.0.1:8000/v1")
     plan_parser.add_argument("--guest-ip-prefix", default="172.16.0")
     plan_parser.add_argument("--host-ip", default="172.16.0.1")
+    plan_parser.add_argument("--guest-netmask", default="255.255.0.0")
     plan_parser.add_argument("--kernel-image", required=True)
     plan_parser.add_argument("--rootfs-image", required=True)
     plan_parser.add_argument("--out-dir", required=True)
@@ -47,6 +49,11 @@ def main(argv: list[str] | None = None) -> int:
     plan_parser.add_argument("--mem-mib", type=int, default=1024)
     plan_parser.add_argument("--tasks-per-vm", type=int, default=1)
     plan_parser.add_argument("--request-workers", type=int, default=1)
+    plan_parser.add_argument("--workload-seconds", type=int, default=60)
+    plan_parser.add_argument("--memory-workers", type=int, default=4)
+    plan_parser.add_argument("--memory-mb", type=int, default=512)
+    plan_parser.add_argument("--memory-rounds", type=int, default=16)
+    plan_parser.add_argument("--memory-mode", default="read")
 
     preflight_parser = subparsers.add_parser("firecracker-preflight")
     preflight_parser.add_argument("--firecracker-bin", default=None)
@@ -64,10 +71,21 @@ def main(argv: list[str] | None = None) -> int:
     prepare_parser.add_argument("--kernel-image", required=True)
     prepare_parser.add_argument("--base-rootfs-image", required=True)
     prepare_parser.add_argument("--host-vllm-url", default="http://172.16.0.1:8000/v1")
+    prepare_parser.add_argument("--guest-netmask", default="255.255.0.0")
     prepare_parser.add_argument("--tasks-per-vm", type=int, default=1)
     prepare_parser.add_argument("--request-workers", type=int, default=1)
     prepare_parser.add_argument("--vcpu-count", type=int, default=2)
     prepare_parser.add_argument("--mem-mib", type=int, default=1024)
+    prepare_parser.add_argument("--workload-seconds", type=int, default=60)
+    prepare_parser.add_argument("--memory-workers", type=int, default=4)
+    prepare_parser.add_argument("--memory-mb", type=int, default=512)
+    prepare_parser.add_argument("--memory-rounds", type=int, default=16)
+    prepare_parser.add_argument("--memory-mode", default="read")
+
+    summarize_parser = subparsers.add_parser("summarize-firecracker-sweep")
+    summarize_parser.add_argument("--run-root", required=True)
+    summarize_parser.add_argument("--run-seconds", type=float, required=True)
+    summarize_parser.add_argument("--workload-seconds", type=float, required=True)
 
     args = parser.parse_args(argv)
 
@@ -108,10 +126,16 @@ def main(argv: list[str] | None = None) -> int:
             host_vllm_url=args.host_vllm_url,
             guest_ip_prefix=args.guest_ip_prefix,
             host_ip=args.host_ip,
+            guest_netmask=args.guest_netmask,
             vcpu_count=args.vcpu_count,
             mem_mib=args.mem_mib,
             tasks_per_vm=args.tasks_per_vm,
             request_workers=args.request_workers,
+            workload_seconds=args.workload_seconds,
+            memory_workers=args.memory_workers,
+            memory_mb=args.memory_mb,
+            memory_rounds=args.memory_rounds,
+            memory_mode=args.memory_mode,
         )
         manifest = []
         for spec in specs:
@@ -176,10 +200,30 @@ def main(argv: list[str] | None = None) -> int:
                     kernel_image=args.kernel_image,
                     base_rootfs_image=args.base_rootfs_image,
                     host_vllm_url=args.host_vllm_url,
+                    guest_netmask=args.guest_netmask,
                     tasks_per_vm=args.tasks_per_vm,
                     request_workers=args.request_workers,
                     vcpu_count=args.vcpu_count,
                     mem_mib=args.mem_mib,
+                    workload_seconds=args.workload_seconds,
+                    memory_workers=args.memory_workers,
+                    memory_mb=args.memory_mb,
+                    memory_rounds=args.memory_rounds,
+                    memory_mode=args.memory_mode,
+                ),
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if args.command == "summarize-firecracker-sweep":
+        print(
+            json.dumps(
+                summarize_firecracker_sweep(
+                    args.run_root,
+                    run_seconds=args.run_seconds,
+                    workload_seconds=args.workload_seconds,
                 ),
                 indent=2,
                 sort_keys=True,

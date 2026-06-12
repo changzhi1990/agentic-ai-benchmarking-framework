@@ -5,12 +5,12 @@ VM_COUNT="${VM_COUNT:-1}"
 BASE_ID="${BASE_ID:-agent}"
 BRIDGE_NAME="${BRIDGE_NAME:-aab-fcbr0}"
 HOST_IP="${HOST_IP:-172.16.0.1}"
-CIDR="${CIDR:-24}"
+CIDR="${CIDR:-16}"
 TAP_PREFIX="${TAP_PREFIX:-tap-${BASE_ID}-}"
 TAP_OWNER="${TAP_OWNER:-${SUDO_USER:-$USER}}"
 
 sudo ip link show "${BRIDGE_NAME}" >/dev/null 2>&1 || sudo ip link add name "${BRIDGE_NAME}" type bridge
-sudo ip addr show dev "${BRIDGE_NAME}" | grep -q "${HOST_IP}/${CIDR}" || sudo ip addr add "${HOST_IP}/${CIDR}" dev "${BRIDGE_NAME}"
+sudo ip addr replace "${HOST_IP}/${CIDR}" dev "${BRIDGE_NAME}"
 sudo ip link set "${BRIDGE_NAME}" up
 sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
 

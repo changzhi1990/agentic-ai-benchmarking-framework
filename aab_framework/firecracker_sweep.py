@@ -17,10 +17,16 @@ def prepare_firecracker_run(
     host_vllm_url: str,
     guest_ip_prefix: str = "172.16.0",
     host_ip: str = "172.16.0.1",
+    guest_netmask: str = "255.255.0.0",
     vcpu_count: int = 2,
     mem_mib: int = 1024,
     tasks_per_vm: int = 1,
     request_workers: int = 1,
+    workload_seconds: int = 60,
+    memory_workers: int = 4,
+    memory_mb: int = 512,
+    memory_rounds: int = 16,
+    memory_mode: str = "read",
 ) -> dict[str, Any]:
     output_dir = Path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -33,10 +39,16 @@ def prepare_firecracker_run(
         host_vllm_url=host_vllm_url,
         guest_ip_prefix=guest_ip_prefix,
         host_ip=host_ip,
+        guest_netmask=guest_netmask,
         vcpu_count=vcpu_count,
         mem_mib=mem_mib,
         tasks_per_vm=tasks_per_vm,
         request_workers=request_workers,
+        workload_seconds=workload_seconds,
+        memory_workers=memory_workers,
+        memory_mb=memory_mb,
+        memory_rounds=memory_rounds,
+        memory_mode=memory_mode,
     )
 
     agents = []
@@ -66,10 +78,16 @@ def prepare_firecracker_run(
     manifest = {
         "vm_count": vm_count,
         "host_vllm_url": host_vllm_url,
+        "guest_netmask": guest_netmask,
         "kernel_image": str(kernel_path),
         "base_rootfs_image": str(base_rootfs_path),
         "tasks_per_vm": tasks_per_vm,
         "request_workers": request_workers,
+        "workload_seconds": workload_seconds,
+        "memory_workers": memory_workers,
+        "memory_mb": memory_mb,
+        "memory_rounds": memory_rounds,
+        "memory_mode": memory_mode,
         "agents": agents,
     }
     (output_dir / "firecracker-run.json").write_text(

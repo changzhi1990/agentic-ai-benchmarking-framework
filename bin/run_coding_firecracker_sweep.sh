@@ -9,21 +9,66 @@ HOST_VLLM_URL="${HOST_VLLM_URL:-http://172.16.0.1:8000/v1}"
 SUDO_PASSWORD="${SUDO_PASSWORD:-}"
 PCM_BIN="${PCM_BIN:-/home/user/zhi/AMDuProf_Nda_Linux_x64_5.0.1479/bin/AMDuProfPcm}"
 RUN_SECONDS="${RUN_SECONDS:-180}"
+WORKLOAD_GRACE_SECONDS="${WORKLOAD_GRACE_SECONDS:-60}"
+AAB_MEMORY_WORKERS="${AAB_MEMORY_WORKERS:-8}"
+AAB_MEMORY_WORKERS_PROFILE="${AAB_MEMORY_WORKERS_PROFILE:-fixed}"
+AAB_MEMORY_MB="${AAB_MEMORY_MB:-256}"
+AAB_MEMORY_ROUNDS="${AAB_MEMORY_ROUNDS:-16}"
+AAB_MEMORY_MODE="${AAB_MEMORY_MODE:-read}"
+AAB_CPU_PINNING="${AAB_CPU_PINNING:-1}"
+AAB_NUMA_POLICY="${AAB_NUMA_POLICY:-bind-by-agent}"
+AAB_AGENTS_PER_VM="${AAB_AGENTS_PER_VM:-1}"
+AAB_MEMORY_WORKERS_PER_AGENT="${AAB_MEMORY_WORKERS_PER_AGENT:-8}"
+AAB_VCPUS_PER_AGENT="${AAB_VCPUS_PER_AGENT:-8}"
 
 mkdir -p "${SWEEP_ROOT}"
 echo "${SWEEP_ROOT}" > runs/latest_coding_firecracker_sweep_dir.txt
 
 plan_point() {
   local agents="$1"
-  if [[ "${agents}" -le 8 ]]; then
-    echo "${agents} 1"
-  elif [[ "${agents}" -le 32 ]]; then
-    echo "8 $(((agents + 7) / 8))"
-  elif [[ "${agents}" -le 128 ]]; then
-    echo "16 $(((agents + 15) / 16))"
-  else
-    echo "32 $(((agents + 31) / 32))"
+  local limit="${AAB_AGENTS_PER_VM}"
+  local tasks_per_vm
+  if [[ "${limit}" -gt "${agents}" ]]; then
+    limit="${agents}"
   fi
+  for tasks_per_vm in $(seq "${limit}" -1 1); do
+    if [[ $((agents % tasks_per_vm)) -eq 0 ]]; then
+      echo "$((agents / tasks_per_vm)) ${tasks_per_vm}"
+      return 0
+    fi
+  done
+  echo "${agents} 1"
+}
+
+workload_seconds_for_run() {
+  if [[ "${RUN_SECONDS}" -gt "${WORKLOAD_GRACE_SECONDS}" ]]; then
+    echo "$((RUN_SECONDS - WORKLOAD_GRACE_SECONDS))"
+  else
+    echo "${RUN_SECONDS}"
+  fi
+}
+
+memory_workers_for_agents() {
+  local agents="$1"
+  local tasks_per_vm="$2"
+  if [[ "${AAB_MEMORY_WORKERS_PROFILE}" == "per-agent" ]]; then
+    echo "$((tasks_per_vm * AAB_MEMORY_WORKERS_PER_AGENT))"
+  elif [[ "${AAB_MEMORY_WORKERS_PROFILE}" != "bandwidth" ]]; then
+    echo "${AAB_MEMORY_WORKERS}"
+  elif [[ "${agents}" -le 4 ]]; then
+    echo 32
+  elif [[ "${agents}" -le 16 ]]; then
+    echo 24
+  elif [[ "${agents}" -le 64 ]]; then
+    echo 16
+  else
+    echo "${AAB_MEMORY_WORKERS}"
+  fi
+}
+
+vcpu_count_for_tasks_per_vm() {
+  local tasks_per_vm="$1"
+  echo "$((tasks_per_vm * AAB_VCPUS_PER_AGENT))"
 }
 
 start_gpu_metrics() {
@@ -98,6 +143,10 @@ start_pcm() {
   mkdir -p "${run_dir}/metrics"
   PCM_PID=""
   if [[ -x "${PCM_BIN}" && -n "${SUDO_PASSWORD}" ]]; then
+    printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' "${PCM_BIN}" top -r \
+      -m memory -a -A system --msr -d 1 -I 1200 \
+      -o "${run_dir}/metrics/amd_pcm_reset.csv" \
+      > "${run_dir}/metrics/amd_pcm_reset.stdout" 2> "${run_dir}/metrics/amd_pcm_reset.stderr" || true
     (
       printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' "${PCM_BIN}" top \
         -m memory -a -A system --msr -d "$((RUN_SECONDS + 120))" -I 1200 \
@@ -118,10 +167,13 @@ stop_pcm() {
 
 for agents in ${AGENTS_LIST}; do
   read -r vm_count tasks_per_vm < <(plan_point "${agents}")
+  workload_seconds="$(workload_seconds_for_run)"
+  memory_workers="$(memory_workers_for_agents "${agents}" "${tasks_per_vm}")"
+  vcpu_count="$(vcpu_count_for_tasks_per_vm "${tasks_per_vm}")"
   run_dir="${SWEEP_ROOT}/agents_${agents}"
-  echo "===== START agents=${agents} vm_count=${vm_count} tasks_per_vm=${tasks_per_vm} ====="
+  echo "===== START agents=${agents} vm_count=${vm_count} tasks_per_vm=${tasks_per_vm} workload_seconds=${workload_seconds} memory_workers=${memory_workers} vcpu_count=${vcpu_count} ====="
   mkdir -p "${run_dir}"
-  printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' env VM_COUNT="${vm_count}" TAP_OWNER="${USER}" ./bin/setup_firecracker_network.sh >/dev/null
+  printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' env VM_COUNT="${vm_count}" TAP_OWNER="${USER}" CIDR=16 ./bin/setup_firecracker_network.sh >/dev/null
   python3 -m aab_framework.cli prepare-firecracker-run \
     --out-dir "${run_dir}" \
     --vm-count "${vm_count}" \
@@ -130,12 +182,17 @@ for agents in ${AGENTS_LIST}; do
     --host-vllm-url "${HOST_VLLM_URL}" \
     --tasks-per-vm "${tasks_per_vm}" \
     --request-workers 1 \
-    --vcpu-count 8 \
+    --workload-seconds "${workload_seconds}" \
+    --memory-workers "${memory_workers}" \
+    --memory-mb "${AAB_MEMORY_MB}" \
+    --memory-rounds "${AAB_MEMORY_ROUNDS}" \
+    --memory-mode "${AAB_MEMORY_MODE}" \
+    --vcpu-count "${vcpu_count}" \
     --mem-mib 16384 >/dev/null
   start_gpu_metrics "${run_dir}"
   start_cpu_metrics "${run_dir}"
   start_pcm "${run_dir}"
-  RUN_DIR="${run_dir}" RUN_SECONDS="${RUN_SECONDS}" SUDO_PASSWORD="${SUDO_PASSWORD}" ./bin/run_prepared_firecracker_agents.sh | tee "${run_dir}/run.log"
+  RUN_DIR="${run_dir}" RUN_SECONDS="${RUN_SECONDS}" SUDO_PASSWORD="${SUDO_PASSWORD}" AAB_CPU_PINNING="${AAB_CPU_PINNING}" AAB_NUMA_POLICY="${AAB_NUMA_POLICY}" ./bin/run_prepared_firecracker_agents.sh | tee "${run_dir}/run.log"
   stop_pcm
   stop_cpu_metrics
   stop_gpu_metrics

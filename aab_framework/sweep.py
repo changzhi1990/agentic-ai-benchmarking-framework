@@ -14,30 +14,30 @@ class SweepPoint:
     mem_mib_per_vm: int = 1024
 
 
-def plan_role_separated_sweep(agent_counts: list[int]) -> list[SweepPoint]:
+def plan_role_separated_sweep(agent_counts: list[int], *, agents_per_vm: int = 1) -> list[SweepPoint]:
+    if agents_per_vm <= 0:
+        raise ValueError("agents_per_vm must be positive")
     points = []
     for agents in agent_counts:
-        vm_count = _vm_count_for_agents(agents)
-        tasks_per_vm = max(1, (agents + vm_count - 1) // vm_count)
+        if agents <= 0:
+            raise ValueError("agents must be positive")
+        tasks_per_vm = _tasks_per_vm_for_agents(agents, agents_per_vm)
+        vm_count = agents // tasks_per_vm
         points.append(
             SweepPoint(
                 agents=agents,
                 vm_count=vm_count,
                 tasks_per_vm=tasks_per_vm,
-                request_workers=min(2, agents),
-                total_tasks=vm_count * tasks_per_vm,
+                request_workers=1,
+                total_tasks=agents,
             )
         )
     return points
 
 
-def _vm_count_for_agents(agents: int) -> int:
-    if agents <= 0:
-        raise ValueError("agents must be positive")
-    if agents <= 8:
-        return agents
-    if agents <= 32:
-        return 8
-    if agents <= 128:
-        return 16
-    return 32
+def _tasks_per_vm_for_agents(agents: int, agents_per_vm: int) -> int:
+    limit = min(agents, agents_per_vm)
+    for value in range(limit, 0, -1):
+        if agents % value == 0:
+            return value
+    return 1
