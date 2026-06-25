@@ -25,6 +25,12 @@ class FirecrackerAgentSpec:
     memory_mb: int = 512
     memory_rounds: int = 16
     memory_mode: str = "read"
+    llm_context_kb: int = 0
+    llm_prompt_repeat: int = 1
+    llm_max_tokens: int = 512
+    llm_load_mode: str = "single_task"
+    llm_request_timeout_seconds: int = 120
+    llm_inter_task_sleep_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -71,6 +77,12 @@ def plan_agents(
     memory_mb: int = 512,
     memory_rounds: int = 16,
     memory_mode: str = "read",
+    llm_context_kb: int = 0,
+    llm_prompt_repeat: int = 1,
+    llm_max_tokens: int = 512,
+    llm_load_mode: str = "single_task",
+    llm_request_timeout_seconds: int = 120,
+    llm_inter_task_sleep_ms: int = 0,
 ) -> list[FirecrackerAgentSpec]:
     if vm_count < 1:
         raise ValueError("vm_count must be >= 1")
@@ -94,6 +106,12 @@ def plan_agents(
                 memory_mb=memory_mb,
                 memory_rounds=memory_rounds,
                 memory_mode=memory_mode,
+                llm_context_kb=llm_context_kb,
+                llm_prompt_repeat=llm_prompt_repeat,
+                llm_max_tokens=llm_max_tokens,
+                llm_load_mode=llm_load_mode,
+                llm_request_timeout_seconds=llm_request_timeout_seconds,
+                llm_inter_task_sleep_ms=llm_inter_task_sleep_ms,
             )
         )
     return specs
@@ -118,6 +136,12 @@ def build_vm_config(spec: FirecrackerAgentSpec, paths: FirecrackerPaths) -> dict
             f"agent.memory_mb={spec.memory_mb}",
             f"agent.memory_rounds={spec.memory_rounds}",
             f"agent.memory_mode={spec.memory_mode}",
+            f"agent.llm_context_kb={spec.llm_context_kb}",
+            f"agent.llm_prompt_repeat={spec.llm_prompt_repeat}",
+            f"agent.llm_max_tokens={spec.llm_max_tokens}",
+            f"agent.llm_load_mode={spec.llm_load_mode}",
+            f"agent.llm_request_timeout_seconds={spec.llm_request_timeout_seconds}",
+            f"agent.llm_inter_task_sleep_ms={spec.llm_inter_task_sleep_ms}",
         ]
     )
     return {
@@ -158,6 +182,12 @@ def build_vm_config(spec: FirecrackerAgentSpec, paths: FirecrackerPaths) -> dict
             "memory_mb": spec.memory_mb,
             "memory_rounds": spec.memory_rounds,
             "memory_mode": spec.memory_mode,
+            "llm_context_kb": spec.llm_context_kb,
+            "llm_prompt_repeat": spec.llm_prompt_repeat,
+            "llm_max_tokens": spec.llm_max_tokens,
+            "llm_load_mode": spec.llm_load_mode,
+            "llm_request_timeout_seconds": spec.llm_request_timeout_seconds,
+            "llm_inter_task_sleep_ms": spec.llm_inter_task_sleep_ms,
         },
     }
 

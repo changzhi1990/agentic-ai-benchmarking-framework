@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any
 
 
+DRAM_PEAK_BW_GBPS = 580.0
+
+
 ALIGNED_FIELDS = [
     "agents",
     "vm_results",
@@ -28,6 +31,7 @@ ALIGNED_FIELDS = [
     "dram_bw_p50_gbps",
     "dram_bw_p95_gbps",
     "dram_bw_max_gbps",
+    "dram_bw_max_pct_of_peak",
     "dram_read_bw_p95_gbps",
     "dram_write_bw_p95_gbps",
     "gpu_util_p50_pct",
@@ -40,11 +44,37 @@ ALIGNED_FIELDS = [
     "gpu_memctrl_active_sample_pct",
     "gpu_power_p95_w",
     "gpu_mem_used_p95_mib",
+    "gpu_mem_used_pct_p95",
+    "gpu_mem_used_pct_max",
+    "gr_engine_active_p95_pct",
+    "gr_engine_active_max_pct",
+    "sm_active_p95_pct",
+    "sm_active_max_pct",
+    "sm_active_avg_pct",
+    "sm_active_sample_pct",
+    "sm_active_area",
+    "sm_occupancy_p95_pct",
+    "sm_occupancy_max_pct",
+    "tensor_active_p95_pct",
+    "tensor_active_max_pct",
+    "tensor_active_avg_pct",
+    "tensor_active_sample_pct",
+    "tensor_active_area",
+    "dram_active_p95_pct",
+    "dram_active_max_pct",
+    "dram_active_avg_pct",
+    "dram_active_sample_pct",
+    "dram_active_area",
+    "fp32_active_p95_pct",
+    "fp32_active_max_pct",
+    "fp16_active_p95_pct",
+    "fp16_active_max_pct",
     "memory_workers",
     "memory_mode",
     "cpu_samples",
     "pcm_samples",
     "gpu_samples",
+    "dcgm_samples",
 ]
 
 
@@ -86,6 +116,15 @@ def _summarize_point(path: Path, run_seconds: float, workload_seconds: float) ->
     gpu_memctrl = _read_float_col(path / "metrics" / "gpu.csv", "utilization_memory_pct")
     gpu_power = _read_float_col(path / "metrics" / "gpu.csv", "power_draw_w")
     gpu_mem_used = _read_float_col(path / "metrics" / "gpu.csv", "memory_used_mib")
+    gpu_mem_used_pct = _read_gpu_memory_used_pct(path / "metrics" / "gpu.csv")
+    dcgm_source = _dcgm_metrics_path(path)
+    gr_engine_active = _read_float_col(dcgm_source, "gr_engine_active_pct")
+    sm_active = _read_float_col(dcgm_source, "sm_active_pct")
+    sm_occupancy = _read_float_col(dcgm_source, "sm_occupancy_pct")
+    tensor_active = _read_float_col(dcgm_source, "tensor_active_pct")
+    dram_active = _read_float_col(dcgm_source, "dram_active_pct")
+    fp32_active = _read_float_col(dcgm_source, "fp32_active_pct")
+    fp16_active = _read_float_col(dcgm_source, "fp16_active_pct")
     dram_bw = _read_pcm_metric(path / "metrics" / "amd_pcm_memory.csv", "Total Mem Bw (GB/s)")
     dram_rd = _read_pcm_metric(path / "metrics" / "amd_pcm_memory.csv", "Total Mem RdBw (GB/s)")
     dram_wr = _read_pcm_metric(path / "metrics" / "amd_pcm_memory.csv", "Total Mem WrBw (GB/s)")
@@ -93,6 +132,8 @@ def _summarize_point(path: Path, run_seconds: float, workload_seconds: float) ->
     completed = int(summary.get("completed_tasks", 0))
     failed = int(summary.get("failed_tasks", 0))
     total = completed + failed
+
+    dram_bw_max = max(dram_bw) if dram_bw else None
 
     return {
         "agents": agents,
@@ -114,29 +155,70 @@ def _summarize_point(path: Path, run_seconds: float, workload_seconds: float) ->
         "load1_p95": _round(_percentile(load1, 95)),
         "dram_bw_p50_gbps": _round(_percentile(dram_bw, 50)),
         "dram_bw_p95_gbps": _round(_percentile(dram_bw, 95)),
-        "dram_bw_max_gbps": _round(max(dram_bw) if dram_bw else None),
+        "dram_bw_max_gbps": _round(dram_bw_max),
+        "dram_bw_max_pct_of_peak": _round(
+            100 * dram_bw_max / DRAM_PEAK_BW_GBPS if dram_bw_max is not None else None
+        ),
         "dram_read_bw_p95_gbps": _round(_percentile(dram_rd, 95)),
         "dram_write_bw_p95_gbps": _round(_percentile(dram_wr, 95)),
         "gpu_util_p50_pct": _round(_percentile(gpu, 50)),
-        "gpu_util_p95_pct": _round(_percentile(gpu, 95)),
+        "gpu_util_p95_pct": _round(_positive_percentile(gpu, 95)),
         "gpu_util_max_pct": _round(max(gpu) if gpu else None),
         "gpu_active_sample_pct": _round(_active_pct(gpu)),
         "gpu_memctrl_p50_pct": _round(_percentile(gpu_memctrl, 50)),
-        "gpu_memctrl_p95_pct": _round(_percentile(gpu_memctrl, 95)),
+        "gpu_memctrl_p95_pct": _round(_positive_percentile(gpu_memctrl, 95)),
         "gpu_memctrl_max_pct": _round(max(gpu_memctrl) if gpu_memctrl else None),
         "gpu_memctrl_active_sample_pct": _round(_active_pct(gpu_memctrl)),
-        "gpu_power_p95_w": _round(_percentile(gpu_power, 95)),
-        "gpu_mem_used_p95_mib": _round(_percentile(gpu_mem_used, 95)),
+        "gpu_power_p95_w": _round(_positive_percentile(gpu_power, 95)),
+        "gpu_mem_used_p95_mib": _round(_positive_percentile(gpu_mem_used, 95)),
+        "gpu_mem_used_pct_p95": _round(_positive_percentile(gpu_mem_used_pct, 95)),
+        "gpu_mem_used_pct_max": _round(max(gpu_mem_used_pct) if gpu_mem_used_pct else None),
+        "gr_engine_active_p95_pct": _round(_positive_percentile(gr_engine_active, 95)),
+        "gr_engine_active_max_pct": _round(max(gr_engine_active) if gr_engine_active else None),
+        "sm_active_p95_pct": _round(_positive_percentile(sm_active, 95)),
+        "sm_active_max_pct": _round(max(sm_active) if sm_active else None),
+        "sm_active_avg_pct": _round(_average(sm_active)),
+        "sm_active_sample_pct": _round(_active_pct(sm_active)),
+        "sm_active_area": _round(_area(sm_active)),
+        "sm_occupancy_p95_pct": _round(_positive_percentile(sm_occupancy, 95)),
+        "sm_occupancy_max_pct": _round(max(sm_occupancy) if sm_occupancy else None),
+        "tensor_active_p95_pct": _round(_positive_percentile(tensor_active, 95)),
+        "tensor_active_max_pct": _round(max(tensor_active) if tensor_active else None),
+        "tensor_active_avg_pct": _round(_average(tensor_active)),
+        "tensor_active_sample_pct": _round(_active_pct(tensor_active)),
+        "tensor_active_area": _round(_area(tensor_active)),
+        "dram_active_p95_pct": _round(_positive_percentile(dram_active, 95)),
+        "dram_active_max_pct": _round(max(dram_active) if dram_active else None),
+        "dram_active_avg_pct": _round(_average(dram_active)),
+        "dram_active_sample_pct": _round(_active_pct(dram_active)),
+        "dram_active_area": _round(_area(dram_active)),
+        "fp32_active_p95_pct": _round(_positive_percentile(fp32_active, 95)),
+        "fp32_active_max_pct": _round(max(fp32_active) if fp32_active else None),
+        "fp16_active_p95_pct": _round(_positive_percentile(fp16_active, 95)),
+        "fp16_active_max_pct": _round(max(fp16_active) if fp16_active else None),
         "memory_workers": _unique_join(item.get("memory_workers") for item in result_records),
         "memory_mode": _unique_join(item.get("memory_mode") for item in result_records),
         "cpu_samples": len(cpu),
         "pcm_samples": len(dram_bw),
         "gpu_samples": len(gpu),
+        "dcgm_samples": len(sm_active or tensor_active or dram_active or gr_engine_active),
     }
 
 
 def _agent_dirs(root: Path) -> list[Path]:
     return sorted(root.glob("agents_*"), key=lambda path: int(path.name.split("_")[1]))
+
+
+def _dcgm_metrics_path(point_path: Path) -> Path:
+    gpu_path = point_path / "metrics" / "gpu.csv"
+    if gpu_path.exists():
+        try:
+            header = gpu_path.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+        except IndexError:
+            header = ""
+        if "sm_active_pct" in header or "dcgm_metrics_backend" in header:
+            return gpu_path
+    return point_path / "metrics" / "dcgm.csv"
 
 
 def _read_float_col(path: Path, column: str) -> list[float]:
@@ -149,6 +231,29 @@ def _read_float_col(path: Path, column: str) -> list[float]:
                 values.append(float(str(row[column]).strip()))
             except (KeyError, TypeError, ValueError):
                 pass
+    return values
+
+
+def _read_gpu_memory_used_pct(path: Path) -> list[float]:
+    values: list[float] = []
+    if not path.exists():
+        return values
+    with path.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            explicit = str(row.get("memory_used_pct", "")).strip()
+            if explicit:
+                try:
+                    values.append(float(explicit))
+                    continue
+                except ValueError:
+                    pass
+            try:
+                used = float(str(row["memory_used_mib"]).strip())
+                total = float(str(row["memory_total_mib"]).strip())
+            except (KeyError, TypeError, ValueError):
+                continue
+            if total > 0:
+                values.append(100 * used / total)
     return values
 
 
@@ -201,10 +306,26 @@ def _percentile(values: list[float], percentile: float) -> float | None:
     return ordered[lower] * (upper - position) + ordered[upper] * (position - lower)
 
 
+def _positive_percentile(values: list[float], percentile: float) -> float | None:
+    return _percentile([value for value in values if value > 0], percentile)
+
+
 def _active_pct(values: list[float]) -> float | None:
     if not values:
         return None
     return 100 * sum(1 for value in values if value > 0) / len(values)
+
+
+def _average(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _area(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values)
 
 
 def _round(value: float | None, digits: int = 2) -> float | str:
@@ -243,6 +364,10 @@ def _markdown_table(rows: list[dict[str, Any]]) -> str:
         "gpu_memctrl_max_pct",
         "gpu_memctrl_active_sample_pct",
         "gpu_power_p95_w",
+        "gpu_mem_used_pct_p95",
+        "sm_active_p95_pct",
+        "tensor_active_p95_pct",
+        "dram_active_p95_pct",
         "memory_workers",
         "memory_mode",
     ]

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from .workloads.coding import build_coding_guest_contract_script
+
 
 def build_guest_agent_script() -> str:
+    coding_contract = build_coding_guest_contract_script()
     return """#!/bin/sh
 set -eu
 
@@ -29,6 +32,12 @@ memory_workers_arg="$(value_from_cmdline agent.memory_workers)"
 memory_mb_arg="$(value_from_cmdline agent.memory_mb)"
 memory_rounds_arg="$(value_from_cmdline agent.memory_rounds)"
 memory_mode_arg="$(value_from_cmdline agent.memory_mode)"
+llm_context_kb_arg="$(value_from_cmdline agent.llm_context_kb)"
+llm_prompt_repeat_arg="$(value_from_cmdline agent.llm_prompt_repeat)"
+llm_max_tokens_arg="$(value_from_cmdline agent.llm_max_tokens)"
+llm_load_mode_arg="$(value_from_cmdline agent.llm_load_mode)"
+llm_request_timeout_seconds_arg="$(value_from_cmdline agent.llm_request_timeout_seconds)"
+llm_inter_task_sleep_ms_arg="$(value_from_cmdline agent.llm_inter_task_sleep_ms)"
 tasks_per_vm="${tasks_per_vm:-1}"
 request_workers="${request_workers:-1}"
 memory_rounds="${AAB_MEMORY_ROUNDS:-16}"
@@ -36,10 +45,25 @@ memory_mb="${AAB_MEMORY_MB:-512}"
 memory_workers="${AAB_MEMORY_WORKERS:-4}"
 memory_mode="${AAB_MEMORY_MODE:-read}"
 task_memory_workers="${AAB_TASK_MEMORY_WORKERS:-0}"
+llm_context_kb="${AAB_LLM_CONTEXT_KB:-0}"
+llm_prompt_repeat="${AAB_LLM_PROMPT_REPEAT:-1}"
+llm_max_tokens="${AAB_LLM_MAX_TOKENS:-512}"
+llm_load_mode="${AAB_LLM_LOAD_MODE:-single_task}"
+llm_request_timeout_seconds="${AAB_LLM_REQUEST_TIMEOUT_SECONDS:-120}"
+llm_inter_task_sleep_ms="${AAB_LLM_INTER_TASK_SLEEP_MS:-0}"
 if [ -n "${memory_rounds_arg}" ] && [ -z "${AAB_MEMORY_ROUNDS:-}" ]; then memory_rounds="${memory_rounds_arg}"; fi
 if [ -n "${memory_mb_arg}" ] && [ -z "${AAB_MEMORY_MB:-}" ]; then memory_mb="${memory_mb_arg}"; fi
 if [ -n "${memory_workers_arg}" ] && [ -z "${AAB_MEMORY_WORKERS:-}" ]; then memory_workers="${memory_workers_arg}"; fi
 if [ -n "${memory_mode_arg}" ] && [ -z "${AAB_MEMORY_MODE:-}" ]; then memory_mode="${memory_mode_arg}"; fi
+if [ -n "${llm_context_kb_arg}" ] && [ -z "${AAB_LLM_CONTEXT_KB:-}" ]; then llm_context_kb="${llm_context_kb_arg}"; fi
+if [ -n "${llm_prompt_repeat_arg}" ] && [ -z "${AAB_LLM_PROMPT_REPEAT:-}" ]; then llm_prompt_repeat="${llm_prompt_repeat_arg}"; fi
+if [ -n "${llm_max_tokens_arg}" ] && [ -z "${AAB_LLM_MAX_TOKENS:-}" ]; then llm_max_tokens="${llm_max_tokens_arg}"; fi
+if [ -n "${llm_load_mode_arg}" ] && [ -z "${AAB_LLM_LOAD_MODE:-}" ]; then llm_load_mode="${llm_load_mode_arg}"; fi
+if [ -n "${llm_request_timeout_seconds_arg}" ] && [ -z "${AAB_LLM_REQUEST_TIMEOUT_SECONDS:-}" ]; then llm_request_timeout_seconds="${llm_request_timeout_seconds_arg}"; fi
+if [ -n "${llm_inter_task_sleep_ms_arg}" ] && [ -z "${AAB_LLM_INTER_TASK_SLEEP_MS:-}" ]; then llm_inter_task_sleep_ms="${llm_inter_task_sleep_ms_arg}"; fi
+case "${llm_inter_task_sleep_ms}" in
+  ''|*[!0-9]*) llm_inter_task_sleep_ms=0 ;;
+esac
 workload_seconds="${AAB_WORKLOAD_SECONDS:-${workload_seconds:-60}}"
 background_memory_seconds="${AAB_BACKGROUND_MEMORY_SECONDS:-${workload_seconds}}"
 timestamp_unix="$(date +%s)"
@@ -65,6 +89,8 @@ else
   vllm_models_payload="curl_or_wget_not_found"
 fi
 vllm_models_payload_escaped="$(printf '%s' "${vllm_models_payload}" | tr '\\n' ' ' | sed 's/"/\\\\"/g' | cut -c 1-2048)"
+
+""" + coding_contract + """
 
 completed_tasks=0
 failed_tasks=0
@@ -150,6 +176,12 @@ cat > /var/lib/aab/result.json <<EOF
   "memory_mode": "${memory_mode}",
   "memory_rounds": ${memory_rounds},
   "memory_workers": ${memory_workers},
+  "llm_context_kb": ${llm_context_kb},
+  "llm_prompt_repeat": ${llm_prompt_repeat},
+  "llm_max_tokens": ${llm_max_tokens},
+  "llm_load_mode": "${llm_load_mode}",
+  "llm_request_timeout_seconds": ${llm_request_timeout_seconds},
+  "llm_inter_task_sleep_ms": ${llm_inter_task_sleep_ms},
   "task_memory_workers": ${task_memory_workers},
   "workload_seconds": ${workload_seconds},
   "background_memory_seconds": ${background_memory_seconds},
@@ -170,6 +202,7 @@ EOF
 run_task() {
   task_id="$1"
   started_ms="$(date +%s%3N 2>/dev/null || echo 0)"
+  write_stage_event "${task_id}" "planner" "planner" "ok" 0
   memory_touched_bytes=0
   task_worker_pids=""
   worker=0
@@ -190,21 +223,21 @@ run_task() {
     fi
     worker=$((worker + 1))
   done
-  prompt="You are a coding bugfix agent. Diagnose this synthetic bug and propose a minimal patch plan. Task ${task_id}: retry_state is not persisted after timeout. Return concise JSON fields diagnosis, patch_plan, verification."
-  payload="$(cat <<EOF_PAYLOAD
-{"model":"/workspace/models/Qwen2.5-Coder-32B-Instruct/","messages":[{"role":"system","content":"You are a coding bugfix agent."},{"role":"user","content":"${prompt}"}],"temperature":0.1,"max_tokens":128}
-EOF_PAYLOAD
-)"
+  write_stage_event "${task_id}" "context_builder" "context_builder" "ok" 0
+  prompt="$(build_coding_prompt "${task_id}")"
+  payload_path="/tmp/${task_id}.payload.json"
+  build_coding_payload "${prompt}" > "${payload_path}"
+  write_stage_event "${task_id}" "solver" "solver" "started" 0
   status="error"
   response=""
   if command -v curl >/dev/null 2>&1; then
-    if response="$(curl -fsS --max-time 60 -H 'Content-Type: application/json' -d "${payload}" "${chat_url}" 2>/tmp/aab-chat.err)"; then
+    if response="$(curl -fsS --max-time "${llm_request_timeout_seconds}" -H 'Content-Type: application/json' --data-binary @"${payload_path}" "${chat_url}" 2>/tmp/aab-chat.err)"; then
       status="ok"
     else
       response="$(cat /tmp/aab-chat.err 2>/dev/null || true)"
     fi
   elif command -v wget >/dev/null 2>&1; then
-    if response="$(wget -q -T 60 --header='Content-Type: application/json' --post-data="${payload}" -O - "${chat_url}" 2>/tmp/aab-chat.err)"; then
+    if response="$(wget -q -T "${llm_request_timeout_seconds}" --header='Content-Type: application/json' --post-file="${payload_path}" -O - "${chat_url}" 2>/tmp/aab-chat.err)"; then
       status="ok"
     else
       response="$(cat /tmp/aab-chat.err 2>/dev/null || true)"
@@ -218,8 +251,17 @@ EOF_PAYLOAD
     latency_ms=$((ended_ms - started_ms))
   fi
   response_chars="$(printf '%s' "${response}" | wc -c | tr -d ' ')"
-  printf '{"task_id":"%s","workload":"coding_bugfix","status":"%s","latency_ms":%s,"response_chars":%s,"memory_rounds":%s,"memory_mb":%s,"memory_mode":"%s","memory_touched_bytes":%s}\\n' \
-    "${task_id}" "${status}" "${latency_ms}" "${response_chars}" "${memory_rounds}" "${memory_mb}" "${memory_mode}" "${memory_touched_bytes}" >> "${trace_path}"
+  write_stage_event "${task_id}" "solver" "solver" "${status}" "${latency_ms}"
+  if [ "${status}" = "ok" ]; then
+    write_stage_event "${task_id}" "verifier" "verifier" "ok" 0
+    write_stage_event "${task_id}" "challenge" "challenge" "ok" 0
+  else
+    write_stage_event "${task_id}" "verifier" "verifier" "skipped" 0
+    write_stage_event "${task_id}" "challenge" "challenge" "blocked" 0
+  fi
+  rm -f "${payload_path}" >/dev/null 2>&1 || true
+  printf '{"task_id":"%s","workload":"coding_bugfix","status":"%s","latency_ms":%s,"response_chars":%s,"memory_rounds":%s,"memory_mb":%s,"memory_mode":"%s","memory_touched_bytes":%s,"llm_context_kb":%s,"llm_prompt_repeat":%s,"llm_max_tokens":%s,"llm_load_mode":"%s","llm_request_timeout_seconds":%s,"llm_inter_task_sleep_ms":%s}\\n' \
+    "${task_id}" "${status}" "${latency_ms}" "${response_chars}" "${memory_rounds}" "${memory_mb}" "${memory_mode}" "${memory_touched_bytes}" "${llm_context_kb}" "${llm_prompt_repeat}" "${llm_max_tokens}" "${llm_load_mode}" "${llm_request_timeout_seconds}" "${llm_inter_task_sleep_ms}" >> "${trace_path}"
   last_latency_ms="${latency_ms}"
   if [ "${first_latency_ms}" = "0" ]; then first_latency_ms="${latency_ms}"; fi
   if [ "${status}" = "ok" ]; then
@@ -229,12 +271,35 @@ EOF_PAYLOAD
   fi
 }
 
+sleep_between_sustained_prefill_tasks() {
+  if [ "${llm_inter_task_sleep_ms}" -gt 0 ]; then
+    sleep_seconds="$(awk -v ms="${llm_inter_task_sleep_ms}" 'BEGIN { printf "%.3f", ms / 1000 }')"
+    sleep "${sleep_seconds}"
+  fi
+}
+
+run_sustained_prefill() {
+  task_index=0
+  end_time=$(( $(date +%s) + workload_seconds ))
+  while [ "${task_index}" -eq 0 ] || [ "$(date +%s)" -lt "${end_time}" ]; do
+    run_task "${vm_id}-task-${task_index}"
+    task_index=$((task_index + 1))
+    if [ "$(date +%s)" -lt "${end_time}" ]; then
+      sleep_between_sustained_prefill_tasks
+    fi
+  done
+}
+
 start_background_memory_workers
-task_index=0
-while [ "${task_index}" -lt "${tasks_per_vm}" ]; do
-  run_task "${vm_id}-task-${task_index}"
-  task_index=$((task_index + 1))
-done
+if [ "${llm_load_mode}" = "sustained_prefill" ]; then
+  run_sustained_prefill
+else
+  task_index=0
+  while [ "${task_index}" -lt "${tasks_per_vm}" ]; do
+    run_task "${vm_id}-task-${task_index}"
+    task_index=$((task_index + 1))
+  done
+fi
 write_result
 wait_for_background_memory_workers
 stop_background_memory_workers

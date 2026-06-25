@@ -111,6 +111,9 @@ Start vLLM:
 MODEL=/home/user/models/Qwen2.5-Coder-32B-Instruct \
 TP=8 \
 PORT=8000 \
+GPU_MEMORY_UTILIZATION=0.93 \
+MAX_MODEL_LEN=32768 \
+MAX_NUM_BATCHED_TOKENS=131072 \
 CONTAINER_NAME=aab-vllm \
 ./bin/start_vllm_8x5090.sh
 ```
@@ -158,10 +161,20 @@ Useful tuning knobs:
 AAB_MEMORY_MODE=read
 AAB_MEMORY_WORKERS=8
 AAB_MEMORY_MB=256
+AAB_LLM_LOAD_MODE=single_task
+AAB_LLM_CONTEXT_KB=128
+AAB_LLM_REQUEST_TIMEOUT_SECONDS=300
+AAB_LLM_INTER_TASK_SLEEP_MS=100
 AAB_CPU_PINNING=1
 AAB_NUMA_POLICY=bind-by-agent
 AAB_AGENTS_PER_VM=1
 ```
+
+For raising GPU memory use without sustained prefill pressure, keep
+`AAB_LLM_LOAD_MODE=single_task`, increase `AAB_LLM_CONTEXT_KB` gradually, and
+start vLLM with a slightly higher `GPU_MEMORY_UTILIZATION`. Rebuild the
+Firecracker rootfs after changing guest-agent code so the generated
+`/usr/local/bin/aab-guest-agent` includes the latest request-generation logic.
 
 ## Output Layout
 

@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+from .agent_team import ChallengeAgent, PluginRegistry
+from .executors.firecracker import build_firecracker_executor_spec
 from .firecracker import (
     FirecrackerPaths,
     build_firecracker_command,
@@ -15,6 +17,7 @@ from .firecracker import (
 from .firecracker_sweep import prepare_firecracker_run
 from .guest_agent import run_noop_agent
 from .metrics import summarize_firecracker_sweep
+from .workloads.coding import build_coding_workload_spec
 from .vllm import (
     VllmDockerConfig,
     build_vllm_container_command,
@@ -34,6 +37,11 @@ def main(argv: list[str] | None = None) -> int:
     vllm_parser.add_argument("--api-key", default="token-abc123")
     vllm_parser.add_argument("--tp", type=int, default=8)
     vllm_parser.add_argument("--port", type=int, default=8000)
+    vllm_parser.add_argument("--nccl-p2p-level", default="SYS")
+    vllm_parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
+    vllm_parser.add_argument("--max-model-len", type=int, default=None)
+    vllm_parser.add_argument("--max-num-seqs", type=int, default=128)
+    vllm_parser.add_argument("--max-num-batched-tokens", type=int, default=None)
 
     plan_parser = subparsers.add_parser("plan-firecracker-agents")
     plan_parser.add_argument("--vm-count", type=int, default=1)
@@ -54,6 +62,12 @@ def main(argv: list[str] | None = None) -> int:
     plan_parser.add_argument("--memory-mb", type=int, default=512)
     plan_parser.add_argument("--memory-rounds", type=int, default=16)
     plan_parser.add_argument("--memory-mode", default="read")
+    plan_parser.add_argument("--llm-context-kb", type=int, default=0)
+    plan_parser.add_argument("--llm-prompt-repeat", type=int, default=1)
+    plan_parser.add_argument("--llm-max-tokens", type=int, default=512)
+    plan_parser.add_argument("--llm-load-mode", default="single_task")
+    plan_parser.add_argument("--llm-request-timeout-seconds", type=int, default=120)
+    plan_parser.add_argument("--llm-inter-task-sleep-ms", type=int, default=0)
 
     preflight_parser = subparsers.add_parser("firecracker-preflight")
     preflight_parser.add_argument("--firecracker-bin", default=None)
@@ -81,11 +95,19 @@ def main(argv: list[str] | None = None) -> int:
     prepare_parser.add_argument("--memory-mb", type=int, default=512)
     prepare_parser.add_argument("--memory-rounds", type=int, default=16)
     prepare_parser.add_argument("--memory-mode", default="read")
+    prepare_parser.add_argument("--llm-context-kb", type=int, default=0)
+    prepare_parser.add_argument("--llm-prompt-repeat", type=int, default=1)
+    prepare_parser.add_argument("--llm-max-tokens", type=int, default=512)
+    prepare_parser.add_argument("--llm-load-mode", default="single_task")
+    prepare_parser.add_argument("--llm-request-timeout-seconds", type=int, default=120)
+    prepare_parser.add_argument("--llm-inter-task-sleep-ms", type=int, default=0)
 
     summarize_parser = subparsers.add_parser("summarize-firecracker-sweep")
     summarize_parser.add_argument("--run-root", required=True)
     summarize_parser.add_argument("--run-seconds", type=float, required=True)
     summarize_parser.add_argument("--workload-seconds", type=float, required=True)
+
+    subparsers.add_parser("inspect-agent-team")
 
     args = parser.parse_args(argv)
 
@@ -99,6 +121,11 @@ def main(argv: list[str] | None = None) -> int:
                     api_key=args.api_key,
                     tensor_parallel_size=args.tp,
                     port=args.port,
+                    nccl_p2p_level=args.nccl_p2p_level,
+                    gpu_memory_utilization=args.gpu_memory_utilization,
+                    max_model_len=args.max_model_len,
+                    max_num_seqs=args.max_num_seqs,
+                    max_num_batched_tokens=args.max_num_batched_tokens,
                 )
             )
         )
@@ -111,6 +138,11 @@ def main(argv: list[str] | None = None) -> int:
                     api_key=args.api_key,
                     tensor_parallel_size=args.tp,
                     port=args.port,
+                    nccl_p2p_level=args.nccl_p2p_level,
+                    gpu_memory_utilization=args.gpu_memory_utilization,
+                    max_model_len=args.max_model_len,
+                    max_num_seqs=args.max_num_seqs,
+                    max_num_batched_tokens=args.max_num_batched_tokens,
                 )
             )
         )
@@ -136,6 +168,12 @@ def main(argv: list[str] | None = None) -> int:
             memory_mb=args.memory_mb,
             memory_rounds=args.memory_rounds,
             memory_mode=args.memory_mode,
+            llm_context_kb=args.llm_context_kb,
+            llm_prompt_repeat=args.llm_prompt_repeat,
+            llm_max_tokens=args.llm_max_tokens,
+            llm_load_mode=args.llm_load_mode,
+            llm_request_timeout_seconds=args.llm_request_timeout_seconds,
+            llm_inter_task_sleep_ms=args.llm_inter_task_sleep_ms,
         )
         manifest = []
         for spec in specs:
@@ -210,6 +248,12 @@ def main(argv: list[str] | None = None) -> int:
                     memory_mb=args.memory_mb,
                     memory_rounds=args.memory_rounds,
                     memory_mode=args.memory_mode,
+                    llm_context_kb=args.llm_context_kb,
+                    llm_prompt_repeat=args.llm_prompt_repeat,
+                    llm_max_tokens=args.llm_max_tokens,
+                    llm_load_mode=args.llm_load_mode,
+                    llm_request_timeout_seconds=args.llm_request_timeout_seconds,
+                    llm_inter_task_sleep_ms=args.llm_inter_task_sleep_ms,
                 ),
                 indent=2,
                 sort_keys=True,
@@ -231,7 +275,77 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "inspect-agent-team":
+        registry = PluginRegistry()
+        workload = build_coding_workload_spec()
+        executor = build_firecracker_executor_spec()
+        registry.register_workload(workload)
+        registry.register_executor(executor)
+        challenge = ChallengeAgent()
+        payload = {
+            "workloads": {
+                name: _workload_to_dict(registry.workload(name))
+                for name in registry.workload_names()
+            },
+            "executors": {
+                name: _executor_to_dict(registry.executor(name))
+                for name in registry.executor_names()
+            },
+            "challenge_reviews": {
+                "workloads": {
+                    workload.name: _review_to_dict(challenge.review_workload(workload))
+                },
+                "executors": {
+                    executor.name: _review_to_dict(challenge.review_executor(executor))
+                },
+            },
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
     return 1
+
+
+def _workload_to_dict(workload) -> dict:
+    return {
+        "name": workload.name,
+        "description": workload.description,
+        "team": {
+            "name": workload.default_team.name,
+            "challenge_role": workload.default_team.challenge_role,
+            "roles": [
+                {
+                    "name": role.name,
+                    "responsibility": role.responsibility,
+                    "consumes": list(role.consumes),
+                    "produces": list(role.produces),
+                }
+                for role in workload.default_team.roles
+            ],
+        },
+        "base_metrics": list(workload.base_metrics),
+        "business_metrics": list(workload.business_metrics),
+    }
+
+
+def _executor_to_dict(executor) -> dict:
+    return {
+        "name": executor.name,
+        "isolation": executor.isolation,
+        "artifacts": list(executor.artifacts),
+        "result_files": list(executor.result_files),
+        "supports_cpu_pinning": executor.supports_cpu_pinning,
+        "supports_numa_binding": executor.supports_numa_binding,
+    }
+
+
+def _review_to_dict(review) -> dict:
+    return {
+        "verdict": review.verdict,
+        "blocked": review.blocked,
+        "blockers": [finding.message for finding in review.blockers],
+        "warnings": [finding.message for finding in review.warnings],
+    }
 
 
 if __name__ == "__main__":

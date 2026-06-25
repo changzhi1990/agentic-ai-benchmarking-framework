@@ -13,14 +13,15 @@ class VllmDockerConfig:
     tensor_parallel_size: int = 8
     port: int = 8000
     container_name: str = "aab-vllm"
-    max_model_len: int = 16384
+    max_model_len: int | None = None
     gpu_memory_utilization: float = 0.9
     max_num_seqs: int = 128
-    max_num_batched_tokens: int = 65536
+    max_num_batched_tokens: int | None = None
     host_models_dir: str = "/home/user/models"
     container_models_dir: str = "/workspace/models"
     workdir: str = "/workspace/"
     shm_size: str = "128G"
+    nccl_p2p_level: str = "SYS"
     dtype: str = "half"
     kv_cache_dtype: str = "auto"
     pipeline_parallel_size: int = 1
@@ -37,6 +38,7 @@ def build_vllm_container_command(config: VllmDockerConfig) -> str:
         f"--shm-size {quote(config.shm_size)} "
         "--runtime=nvidia "
         "--gpus all "
+        f"-e NCCL_P2P_LEVEL={quote(config.nccl_p2p_level)} "
         "--entrypoint /usr/bin/bash "
         "--security-opt seccomp=unconfined "
         "--security-opt apparmor=unconfined "
@@ -49,17 +51,30 @@ def build_vllm_container_command(config: VllmDockerConfig) -> str:
 
 def build_vllm_serve_command(config: VllmDockerConfig) -> str:
     model_path = _container_model_path(config)
-    return (
-        f"docker exec -d {quote(config.container_name)} "
-        f"vllm serve {quote(model_path)} "
-        f"--dtype {quote(config.dtype)} "
-        f"--kv-cache-dtype {quote(config.kv_cache_dtype)} "
-        f"-tp {config.tensor_parallel_size} "
-        f"-pp {config.pipeline_parallel_size} "
-        f"--max-num-seqs {config.max_num_seqs} "
-        f"--gpu-memory-utilization {config.gpu_memory_utilization} "
-        "--disable-log-requests"
+    parts = [
+        f"docker exec -d {quote(config.container_name)}",
+        f"vllm serve {quote(model_path)}",
+        f"--dtype {quote(config.dtype)}",
+        f"--kv-cache-dtype {quote(config.kv_cache_dtype)}",
+        f"-tp {config.tensor_parallel_size}",
+        f"-pp {config.pipeline_parallel_size}",
+    ]
+    if config.max_model_len is not None:
+        parts.append(f"--max-model-len {config.max_model_len}")
+    parts.extend(
+        [
+            f"--max-num-seqs {config.max_num_seqs}",
+        ]
     )
+    if config.max_num_batched_tokens is not None:
+        parts.append(f"--max-num-batched-tokens {config.max_num_batched_tokens}")
+    parts.extend(
+        [
+            f"--gpu-memory-utilization {config.gpu_memory_utilization}",
+            "--disable-log-requests",
+        ]
+    )
+    return " ".join(parts)
 
 
 def build_vllm_docker_command(config: VllmDockerConfig) -> str:

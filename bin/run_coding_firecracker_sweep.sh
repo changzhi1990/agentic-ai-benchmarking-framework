@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AGENTS_LIST="${AGENTS_LIST:-2 4 8 16 32 64 128 192 256}"
+AGENTS_LIST="${AGENTS_LIST:-1 2 4 8 16 32 64 128}"
 SWEEP_ROOT="${SWEEP_ROOT:-runs/coding-firecracker-sweep-$(date +%Y%m%d-%H%M%S)}"
 KERNEL_IMAGE="${KERNEL_IMAGE:-/opt/firecracker/vmlinux}"
 BASE_ROOTFS_IMAGE="${BASE_ROOTFS_IMAGE:-/opt/firecracker/rootfs.ext4}"
@@ -15,6 +15,15 @@ AAB_MEMORY_WORKERS_PROFILE="${AAB_MEMORY_WORKERS_PROFILE:-fixed}"
 AAB_MEMORY_MB="${AAB_MEMORY_MB:-256}"
 AAB_MEMORY_ROUNDS="${AAB_MEMORY_ROUNDS:-16}"
 AAB_MEMORY_MODE="${AAB_MEMORY_MODE:-read}"
+AAB_LLM_CONTEXT_KB="${AAB_LLM_CONTEXT_KB:-2}"
+AAB_LLM_PROMPT_REPEAT="${AAB_LLM_PROMPT_REPEAT:-1}"
+AAB_LLM_MAX_TOKENS="${AAB_LLM_MAX_TOKENS:-512}"
+AAB_LLM_LOAD_MODE="${AAB_LLM_LOAD_MODE:-single_task}"
+AAB_LLM_REQUEST_TIMEOUT_SECONDS="${AAB_LLM_REQUEST_TIMEOUT_SECONDS:-120}"
+AAB_LLM_INTER_TASK_SLEEP_MS="${AAB_LLM_INTER_TASK_SLEEP_MS:-0}"
+AAB_DCGMI_BIN="${AAB_DCGMI_BIN:-dcgmi}"
+AAB_DCGM_INTERVAL_MS="${AAB_DCGM_INTERVAL_MS:-1000}"
+AAB_DCGM_FIELD_IDS="${AAB_DCGM_FIELD_IDS:-203,204,252,250,155,150,1002,1003,1004,1005,1007,1008}"
 AAB_CPU_PINNING="${AAB_CPU_PINNING:-1}"
 AAB_NUMA_POLICY="${AAB_NUMA_POLICY:-bind-by-agent}"
 AAB_AGENTS_PER_VM="${AAB_AGENTS_PER_VM:-1}"
@@ -72,16 +81,25 @@ vcpu_count_for_tasks_per_vm() {
 }
 
 start_gpu_metrics() {
+  start_gpu_metrics_dcgm "$1"
+}
+
+start_gpu_metrics_dcgm() {
   local run_dir="$1"
   mkdir -p "${run_dir}/metrics"
+  if ! command -v "${AAB_DCGMI_BIN}" >/dev/null 2>&1; then
+    echo "dcgmi unavailable; GPU metrics disabled" > "${run_dir}/metrics/gpu_metrics_backend.log"
+    echo "timestamp,index,utilization_gpu_pct,utilization_memory_pct,memory_used_mib,memory_total_mib,power_draw_w,temperature_c,memory_used_pct,gr_engine_active_pct,sm_active_pct,sm_occupancy_pct,tensor_active_pct,dram_active_pct,fp32_active_pct,fp16_active_pct,gpu_metrics_backend,dcgm_metrics_backend" > "${run_dir}/metrics/gpu.csv"
+    return 0
+  fi
+  echo "dcgmi" > "${run_dir}/metrics/gpu_metrics_backend.log"
   (
-    echo "timestamp,index,utilization_gpu_pct,utilization_memory_pct,memory_used_mib,memory_total_mib,power_draw_w,temperature_c"
-    while true; do
-      ts="$(date +%s)"
-      nvidia-smi --query-gpu=index,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw,temperature.gpu --format=csv,noheader,nounits 2>/dev/null \
-        | awk -v ts="${ts}" -F', ' '{print ts "," $0}'
-      sleep 1
-    done
+    echo "timestamp,index,utilization_gpu_pct,utilization_memory_pct,memory_used_mib,memory_total_mib,power_draw_w,temperature_c,memory_used_pct,gr_engine_active_pct,sm_active_pct,sm_occupancy_pct,tensor_active_pct,dram_active_pct,fp32_active_pct,fp16_active_pct,gpu_metrics_backend,dcgm_metrics_backend"
+    "${AAB_DCGMI_BIN}" dmon -e "${AAB_DCGM_FIELD_IDS}" -d "${AAB_DCGM_INTERVAL_MS}" 2>>"${run_dir}/metrics/dcgm.stderr" \
+      | while IFS= read -r line; do
+          ts="$(date +%s)"
+          printf '%s\n' "${line}" | python3 -m aab_framework.dcgm --field-ids "${AAB_DCGM_FIELD_IDS}" --timestamp "${ts}" | tail -n +2 || true
+        done
   ) > "${run_dir}/metrics/gpu.csv" &
   GPU_METRICS_PID="$!"
 }
@@ -133,6 +151,7 @@ stop_cpu_metrics() {
 
 stop_gpu_metrics() {
   if [[ -n "${GPU_METRICS_PID:-}" ]]; then
+    pkill -TERM -P "${GPU_METRICS_PID}" >/dev/null 2>&1 || true
     kill "${GPU_METRICS_PID}" >/dev/null 2>&1 || true
     wait "${GPU_METRICS_PID}" >/dev/null 2>&1 || true
   fi
@@ -171,7 +190,7 @@ for agents in ${AGENTS_LIST}; do
   memory_workers="$(memory_workers_for_agents "${agents}" "${tasks_per_vm}")"
   vcpu_count="$(vcpu_count_for_tasks_per_vm "${tasks_per_vm}")"
   run_dir="${SWEEP_ROOT}/agents_${agents}"
-  echo "===== START agents=${agents} vm_count=${vm_count} tasks_per_vm=${tasks_per_vm} workload_seconds=${workload_seconds} memory_workers=${memory_workers} vcpu_count=${vcpu_count} ====="
+  echo "===== START agents=${agents} vm_count=${vm_count} tasks_per_vm=${tasks_per_vm} workload_seconds=${workload_seconds} memory_workers=${memory_workers} vcpu_count=${vcpu_count} llm_context_kb=${AAB_LLM_CONTEXT_KB} llm_prompt_repeat=${AAB_LLM_PROMPT_REPEAT} llm_max_tokens=${AAB_LLM_MAX_TOKENS} llm_load_mode=${AAB_LLM_LOAD_MODE} llm_request_timeout_seconds=${AAB_LLM_REQUEST_TIMEOUT_SECONDS} llm_inter_task_sleep_ms=${AAB_LLM_INTER_TASK_SLEEP_MS} ====="
   mkdir -p "${run_dir}"
   printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' env VM_COUNT="${vm_count}" TAP_OWNER="${USER}" CIDR=16 ./bin/setup_firecracker_network.sh >/dev/null
   python3 -m aab_framework.cli prepare-firecracker-run \
@@ -187,6 +206,12 @@ for agents in ${AGENTS_LIST}; do
     --memory-mb "${AAB_MEMORY_MB}" \
     --memory-rounds "${AAB_MEMORY_ROUNDS}" \
     --memory-mode "${AAB_MEMORY_MODE}" \
+    --llm-context-kb "${AAB_LLM_CONTEXT_KB}" \
+    --llm-prompt-repeat "${AAB_LLM_PROMPT_REPEAT}" \
+    --llm-max-tokens "${AAB_LLM_MAX_TOKENS}" \
+    --llm-load-mode "${AAB_LLM_LOAD_MODE}" \
+    --llm-request-timeout-seconds "${AAB_LLM_REQUEST_TIMEOUT_SECONDS}" \
+    --llm-inter-task-sleep-ms "${AAB_LLM_INTER_TASK_SLEEP_MS}" \
     --vcpu-count "${vcpu_count}" \
     --mem-mib 16384 >/dev/null
   start_gpu_metrics "${run_dir}"

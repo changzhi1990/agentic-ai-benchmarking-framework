@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AAB Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">AAB</div>
+        <div>
+          <h1>Agentic Benchmark</h1>
+          <p>Firecracker sweep console</p>
+        </div>
+      </div>
+
+      <section class="panel compact">
+        <div class="panel-title">Runs</div>
+        <select id="runSelect" class="control"></select>
+        <button id="refreshButton" class="button secondary" type="button">Refresh</button>
+      </section>
+
+      <section class="panel compact">
+        <div class="panel-title">Start Sweep</div>
+        <div class="split-fields">
+          <label>Workload<select id="workloadSelect" class="control"></select></label>
+          <label>Executor<select id="executorSelect" class="control"></select></label>
+        </div>
+        <label>Agents</label>
+        <input id="agentsInput" class="control" value="1 2 4 8 16 32 64 128">
+        <div class="split-fields">
+          <label>Run seconds<input id="runSecondsInput" class="control" type="number" value="180" min="1"></label>
+          <label>Grace<input id="graceInput" class="control" type="number" value="60" min="0"></label>
+        </div>
+        <div class="split-fields">
+          <label>Mem workers<input id="memWorkersInput" class="control" type="number" value="8" min="1"></label>
+          <label>Mem MiB<input id="memMbInput" class="control" type="number" value="256" min="1"></label>
+        </div>
+        <div class="split-fields">
+          <label>vCPU/agent<input id="vcpuInput" class="control" type="number" value="8" min="1"></label>
+          <label>Name<input id="runNameInput" class="control" value="manual"></label>
+        </div>
+        <div class="split-fields">
+          <label>Context KiB<input id="llmContextKbInput" class="control" type="number" value="2" min="0"></label>
+          <label>Prompt repeat<input id="llmPromptRepeatInput" class="control" type="number" value="1" min="1"></label>
+        </div>
+        <div class="split-fields">
+          <label>Max tokens<input id="llmMaxTokensInput" class="control" type="number" value="512" min="1"></label>
+          <label>Request timeout<input id="llmRequestTimeoutInput" class="control" type="number" value="120" min="1"></label>
+        </div>
+        <div class="split-fields">
+          <label>Load mode<select id="llmLoadModeSelect" class="control">
+            <option value="single_task">single_task</option>
+            <option value="sustained_prefill">sustained_prefill</option>
+          </select></label>
+          <label>Inter-task sleep<input id="llmInterTaskSleepInput" class="control" type="number" value="0" min="0"></label>
+        </div>
+        <label>Password</label>
+        <input id="sudoInput" class="control" type="password" placeholder="Uses server env if empty">
+        <div class="actions">
+          <button id="startButton" class="button primary" type="button">Start</button>
+          <button id="stopButton" class="button danger" type="button">Stop</button>
+        </div>
+        <p id="startMessage" class="muted"></p>
+      </section>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h2 id="runTitle">Loading...</h2>
+          <p id="runPath" class="muted"></p>
+        </div>
+        <div id="statusBadge" class="badge">checking</div>
+      </header>
+
+      <section class="kpi-grid">
+        <div class="kpi"><span>Max Agents</span><strong id="kpiMaxAgents">-</strong></div>
+        <div class="kpi"><span>Best Stable</span><strong id="kpiStable">-</strong></div>
+        <div class="kpi"><span>Completed</span><strong id="kpiCompleted">-</strong></div>
+        <div class="kpi"><span>Failed</span><strong id="kpiFailed">-</strong></div>
+        <div class="kpi"><span>Peak Throughput</span><strong id="kpiThroughput">-</strong></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Business Performance</div>
+        <canvas id="businessChart" height="280"></canvas>
+      </section>
+
+      <section class="grid two">
+        <div class="panel">
+          <div class="panel-title">CPU Metrics</div>
+          <canvas id="cpuChart" height="260"></canvas>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Firecracker Mapping</div>
+          <div id="mappingTable" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section class="metrics-section">
+        <div class="section-title">GPU Metrics</div>
+        <div class="grid three">
+          <div class="panel">
+            <div class="panel-title">GPU Utilization</div>
+            <canvas id="gpuUtilChart" height="260"></canvas>
+          </div>
+          <div class="panel">
+            <div class="panel-title">GPU Memory</div>
+            <canvas id="gpuMemoryChart" height="260"></canvas>
+          </div>
+          <div class="panel">
+            <div class="panel-title">GPU Engine Activity</div>
+            <canvas id="gpuActivityChart" height="260"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Sweep Results</div>
+        <div id="resultsTable" class="table-wrap"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Failures</div>
+        <div id="failureList" class="failure-list"></div>
+      </section>
+
+      <section class="panel logs-panel">
+        <div class="panel-title row-title">
+          <span>Logs</span>
+          <span>
+            <select id="pointSelect" class="control small"></select>
+            <button id="loadLogButton" class="button secondary" type="button">Load Log</button>
+            <button id="loadDashboardLogButton" class="button secondary" type="button">Sweep Process</button>
+          </span>
+        </div>
+        <pre id="logView">No log loaded.</pre>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
