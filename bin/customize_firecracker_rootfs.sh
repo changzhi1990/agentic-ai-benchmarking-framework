@@ -26,6 +26,16 @@ from aab_framework.rootfs import build_guest_systemd_unit
 print(build_guest_systemd_unit(), end="")
 PY
 
+python3 - <<'PY' > "${tmpdir}/guest_worker.py"
+from aab_framework.rootfs import build_mini_swe_guest_worker_script
+print(build_mini_swe_guest_worker_script(), end="")
+PY
+
+python3 - <<'PY' > "${tmpdir}/run_worker.sh"
+from aab_framework.rootfs import build_mini_swe_run_worker_script
+print(build_mini_swe_run_worker_script(), end="")
+PY
+
 python3 - <<'PY' > "${tmpdir}/aab-memory-burner.c"
 from aab_framework.rootfs import build_memory_burner_source
 print(build_memory_burner_source(), end="")
@@ -47,6 +57,9 @@ trap 'cleanup_mount; rm -rf "${tmpdir}"' EXIT
 
 sudo install -m 0755 "${tmpdir}/aab-guest-agent" "${MOUNT_DIR}/usr/local/bin/aab-guest-agent"
 sudo install -m 0755 "${tmpdir}/aab-memory-burner" "${MOUNT_DIR}/usr/local/bin/aab-memory-burner"
+sudo mkdir -p "${MOUNT_DIR}/opt/agent-runtime" "${MOUNT_DIR}/opt/mini-swe-agent" "${MOUNT_DIR}/output" "${MOUNT_DIR}/work" "${MOUNT_DIR}/task"
+sudo install -m 0755 "${tmpdir}/guest_worker.py" "${MOUNT_DIR}/opt/agent-runtime/guest_worker.py"
+sudo install -m 0755 "${tmpdir}/run_worker.sh" "${MOUNT_DIR}/root/run_worker.sh"
 sudo install -m 0644 "${tmpdir}/aab-guest-agent.service" "${MOUNT_DIR}/etc/systemd/system/aab-guest-agent.service"
 sudo mkdir -p "${MOUNT_DIR}/etc/systemd/system/multi-user.target.wants"
 sudo ln -sf /etc/systemd/system/aab-guest-agent.service \
@@ -55,4 +68,4 @@ sudo mkdir -p "${MOUNT_DIR}/var/lib/aab"
 sudo rm -f "${MOUNT_DIR}/var/lib/aab/result.json" "${MOUNT_DIR}/var/lib/aab/trace.jsonl"
 sudo sync
 
-echo "Customized ${ROOTFS_IMAGE} with aab-guest-agent.service"
+echo "Customized ${ROOTFS_IMAGE} with aab-guest-agent.service and mini-swe guest worker"

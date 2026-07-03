@@ -80,6 +80,10 @@ with what success rate, latency, resource cost, and isolation overhead?
 
 See [docs/methodology.md](docs/methodology.md) for the full methodology.
 
+See [docs/mini_swe_agent_team_v2.md](docs/mini_swe_agent_team_v2.md) for the
+mini-swe-agent Agent Team v2 workload, including the Firecracker guest worker,
+rootfs build script, agent-count sweep model, and UI metrics schema.
+
 ## First Scaffold
 
 This repository also includes an initial implementation scaffold:
@@ -115,7 +119,51 @@ python3 -m aab_framework.cli plan-firecracker-agents \
   --out-dir runs/firecracker-plan
 ```
 
-The first scaffold does not implement real agent task logic yet. The guest agent is a no-op readiness placeholder, intended to validate executor wiring before adding coding, SRE, security, or data-analysis workloads.
+For mini-swe-agent team runs, build or extend the Firecracker rootfs and use the
+team workload:
+
+```bash
+BASE_ROOTFS_IMAGE=/opt/firecracker/rootfs.ext4 \
+OUTPUT_ROOTFS_IMAGE=/opt/firecracker/rootfs-mini-swe-agent.ext4 \
+scripts/build_firecracker_mini_swe_rootfs.sh
+
+python3 -m aab_framework.cli run \
+  --workload mini_swe_agent_team_v2 \
+  --num-agents 4 \
+  --parallelism 4 \
+  --context-length 1024 \
+  --adapter-mode mock
+```
+
+For agent and context sweeps:
+
+```bash
+python3 -m aab_framework.cli sweep \
+  --workload mini_swe_agent_team_v2 \
+  --agent-counts 1,2,4,8 \
+  --context-lengths 1024,2048,4096,8192 \
+  --experiment-mode fixed_llm \
+  --max-active-llm-requests 8 \
+  --adapter-mode mock
+```
+
+For the optional Firecracker path, build or extend the Firecracker rootfs and run:
+
+```bash
+python3 -m aab_framework.cli run \
+  --workload mini_swe_agent_team_v2 \
+  --agent-sweep 1,2,4,8 \
+  --parallelism 8 \
+  --use-firecracker true \
+  --fc-rootfs /opt/firecracker/rootfs-mini-swe-agent.ext4 \
+  --fc-kernel /opt/firecracker/vmlinux \
+  --guest-vllm-base-url http://172.16.0.1:8000/v1 \
+  --context-length 1024
+```
+
+Each sweep point is an independent run under `runs/<sweep_group_id>/`, and the
+sweep group writes `sweep.json` with `scaling_metrics` copied from each child
+run's `result.json`.
 
 The vLLM launcher uses a two-step Docker flow for better stability on the 8x5090 test server:
 

@@ -163,7 +163,8 @@ class AgentTeamArchitectureTests(unittest.TestCase):
         self.assertIn("${task_id}", prompt)
         self.assertIn("${prompt}", payload)
         self.assertIn("${llm_max_tokens}", payload)
-        self.assertIn("/workspace/models/Qwen2.5-Coder-32B-Instruct/", payload)
+        self.assertIn('"model":"agentic-model"', payload)
+        self.assertNotIn("/workspace/models/Qwen2.5-Coder-32B-Instruct/", payload)
         self.assertIn("diagnosis", payload)
         self.assertIn("task_id", trace_schema.required_fields)
         self.assertIn("event_type", trace_schema.required_fields)
@@ -181,6 +182,8 @@ class AgentTeamArchitectureTests(unittest.TestCase):
         self.assertIn("END coding workload contract", script)
         self.assertIn("build_coding_prompt", script)
         self.assertIn("build_coding_payload", script)
+        self.assertIn('"model":"agentic-model"', script)
+        self.assertNotIn("/workspace/models/Qwen2.5-Coder-32B-Instruct/", script)
 
     def test_guest_agent_script_records_agent_team_stage_trace_events(self) -> None:
         script = build_guest_agent_script()

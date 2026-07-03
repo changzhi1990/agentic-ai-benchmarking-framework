@@ -20,11 +20,14 @@ from .agent_team import ChallengeAgent, PluginRegistry
 from .executors.firecracker import build_firecracker_executor_spec
 from .metrics import summarize_firecracker_sweep
 from .workloads.coding import build_coding_workload_spec
+from .workloads.mini_swe_agent_team_v2 import build_mini_swe_agent_team_v2_workload_spec
+from .team_v2.sweep import SWEEP_WORKLOAD_TYPE
 
 
 MAX_AGENT_COUNT = 512
 STATIC_DIR = Path(__file__).with_name("dashboard_static")
 SUPPORTED_DASHBOARD_COMBO = ("coding", "firecracker")
+TEAM_V2_WORKLOAD = "mini_swe_agent_team_v2"
 VLLM_MODELS_URL = "http://127.0.0.1:8000/v1/models"
 
 
@@ -106,8 +109,10 @@ def build_sweep_environment(config: SweepLaunchConfig, *, timestamp: str | None 
 def dashboard_plugins_payload() -> dict[str, Any]:
     registry = PluginRegistry()
     workload = build_coding_workload_spec()
+    team_workload = build_mini_swe_agent_team_v2_workload_spec()
     executor = build_firecracker_executor_spec()
     registry.register_workload(workload)
+    registry.register_workload(team_workload)
     registry.register_executor(executor)
     challenge = ChallengeAgent()
     return {
@@ -131,10 +136,14 @@ def dashboard_plugins_payload() -> dict[str, Any]:
             for item in (registry.executor(name) for name in registry.executor_names())
         ],
         "supported_combinations": [
-            {"workload": SUPPORTED_DASHBOARD_COMBO[0], "executor": SUPPORTED_DASHBOARD_COMBO[1]}
+            {"workload": SUPPORTED_DASHBOARD_COMBO[0], "executor": SUPPORTED_DASHBOARD_COMBO[1]},
+            {"workload": TEAM_V2_WORKLOAD, "executor": "process"},
         ],
         "challenge_reviews": {
-            "workloads": {workload.name: _review_to_dict(challenge.review_workload(workload))},
+            "workloads": {
+                workload.name: _review_to_dict(challenge.review_workload(workload)),
+                team_workload.name: _review_to_dict(challenge.review_workload(team_workload)),
+            },
             "executors": {executor.name: _review_to_dict(challenge.review_executor(executor))},
         },
     }
@@ -159,6 +168,7 @@ def list_runs(runs_dir: str | Path) -> list[dict[str, Any]]:
                 "mtime": path.stat().st_mtime,
                 "has_aligned_metrics": (path / "aligned_metrics.csv").exists(),
                 "has_sweep_summary": (path / "sweep_summary.csv").exists(),
+                "has_team_result": _is_team_v2_run(path) or _is_team_v2_sweep_run(path),
             }
         )
     return runs
@@ -166,6 +176,10 @@ def list_runs(runs_dir: str | Path) -> list[dict[str, Any]]:
 
 def load_run_report(run_dir: str | Path) -> dict[str, Any]:
     run_path = Path(run_dir)
+    if _is_team_v2_sweep_run(run_path):
+        return _load_team_v2_sweep_report(run_path)
+    if _is_team_v2_run(run_path):
+        return _load_team_v2_run_report(run_path)
     ensure_aligned_metrics(run_path)
     metadata = _read_run_metadata(run_path)
     aligned_rows = _read_csv_rows(run_path / "aligned_metrics.csv")
@@ -227,6 +241,42 @@ def serve(project_root: str | Path, *, host: str, port: int) -> None:
     server = ThreadingHTTPServer((host, port), handler)
     print(json.dumps({"url": f"http://{host}:{port}", "project_root": str(root)}, sort_keys=True))
     server.serve_forever()
+
+
+def serve_with_fallback(
+    project_root: str | Path,
+    *,
+    host: str,
+    port: int,
+    fallback_port: int,
+    enable_fallback: bool,
+) -> dict[str, Any]:
+    try:
+        serve(project_root, host=host, port=port)
+    except OSError as exc:
+        if not enable_fallback:
+            raise
+        reason = str(exc)
+        if port == 80 and "permission" in reason.lower():
+            reason = "Port 80 requires root permission"
+            print(f"Port 80 requires root. Falling back to {fallback_port}.")
+        else:
+            print(f"Port {port} is unavailable ({exc}). Falling back to {fallback_port}.")
+        serve(project_root, host=host, port=fallback_port)
+        return {
+            "ui_host": host,
+            "requested_ui_port": port,
+            "actual_ui_port": fallback_port,
+            "port_fallback_used": True,
+            "fallback_reason": reason,
+        }
+    return {
+        "ui_host": host,
+        "requested_ui_port": port,
+        "actual_ui_port": port,
+        "port_fallback_used": False,
+        "fallback_reason": None,
+    }
 
 
 class DashboardState:
@@ -403,6 +453,9 @@ def _make_handler(state: DashboardState) -> type[BaseHTTPRequestHandler]:
 
 def _resolve_run(state: DashboardState, name: str) -> Path:
     if name == "latest":
+        runs = list_runs(state.runs_dir)
+        if runs:
+            return Path(runs[0]["path"])
         latest_file = state.runs_dir / "latest_coding_firecracker_sweep_dir.txt"
         if latest_file.exists():
             value = latest_file.read_text(encoding="utf-8").strip()
@@ -410,9 +463,6 @@ def _resolve_run(state: DashboardState, name: str) -> Path:
                 path = state.project_root / value
                 if path.exists():
                     return path
-        runs = list_runs(state.runs_dir)
-        if runs:
-            return Path(runs[0]["path"])
         raise ValueError("no runs found")
     safe_name = Path(name).name
     path = state.runs_dir / safe_name
@@ -431,6 +481,8 @@ def _resolve_log(state: DashboardState, query: dict[str, list[str]]) -> Path:
     if log_type == "vllm":
         return state.runs_dir / "vllm-start-20260612-171551.log"
     run_path = _resolve_run(state, query.get("run", ["latest"])[0])
+    if _is_team_v2_run(run_path):
+        return run_path / "result.json"
     point = query.get("point", [""])[0]
     if point:
         return run_path / f"agents_{int(point)}" / "run.log"
@@ -537,6 +589,206 @@ def _build_point(run_path: Path, row: dict[str, str]) -> dict[str, Any]:
         "failed_vm_ids": failed_vm_ids,
         "config": _point_config(manifest),
     }
+
+
+def _load_team_v2_run_report(run_path: Path) -> dict[str, Any]:
+    result = _read_json(run_path / "result.json")
+    summary = result.get("summary", {})
+    config = result.get("config", {})
+    agents = result.get("agents", [])
+    issues = result.get("issues", [])
+    metrics = result.get("metrics_summary", {}) or {}
+    point = {
+        "agents": _number(config.get("num_agents", len(agents))),
+        "vm_results": len(agents),
+        "completed": _number(summary.get("completed_issues", 0)),
+        "failed": _number(summary.get("failed_issues", 0)),
+        "success_rate_pct": _number(summary.get("verified_success_rate", 0)),
+        "throughput_task_per_min_run": _number(summary.get("candidate_per_min", 0)),
+        "throughput_task_per_min_workload": _number(summary.get("candidate_per_min", 0)),
+        "lat_all_p50_ms": _number(summary.get("issue_latency_p50_sec", 0)) * 1000,
+        "lat_all_p95_ms": _number(summary.get("issue_latency_p95_sec", 0)) * 1000,
+        "lat_ok_p50_ms": _number(summary.get("issue_latency_p50_sec", 0)) * 1000,
+        "lat_ok_p95_ms": _number(summary.get("issue_latency_p95_sec", 0)) * 1000,
+        "cpu_p50_pct": _metric(metrics, "cpu", "p50"),
+        "cpu_p95_pct": _metric(metrics, "cpu", "p95"),
+        "cpu_max_pct": _metric(metrics, "cpu", "max"),
+        "dram_bw_p50_gbps": _metric(metrics, "dram_bw", "avg"),
+        "dram_bw_p95_gbps": _metric(metrics, "dram_bw", "p95"),
+        "dram_bw_max_gbps": _metric(metrics, "dram_bw", "max"),
+        "dram_bw_max_pct_of_peak": _dram_peak_pct("", _metric(metrics, "dram_bw", "max")),
+        "gpu_util_p95_pct": _metric(metrics, "gpu", "p95"),
+        "gpu_util_max_pct": _metric(metrics, "gpu", "max"),
+        "gpu_active_sample_pct": 0,
+        "gpu_memctrl_p95_pct": 0,
+        "gpu_memctrl_max_pct": 0,
+        "gpu_memctrl_active_sample_pct": 0,
+        "gpu_power_p95_w": 0,
+        "gpu_mem_used_p95_mib": _metric(metrics, "gpu_memory", "p95"),
+        "gpu_mem_used_pct_p95": 0,
+        "gpu_mem_used_pct_max": 0,
+        "sm_active_p95_pct": 0,
+        "sm_active_max_pct": 0,
+        "sm_occupancy_p95_pct": 0,
+        "tensor_active_p95_pct": 0,
+        "tensor_active_max_pct": 0,
+        "dram_active_p95_pct": 0,
+        "dram_active_max_pct": 0,
+        "fp16_active_p95_pct": 0,
+        "fp16_active_max_pct": 0,
+        "fp32_active_p95_pct": 0,
+        "fp32_active_max_pct": 0,
+        "dcgm_samples": 0,
+        "vllm_ok": 1 if result.get("vllm", {}).get("ok", True) else 0,
+        "failed_vm_ids": [item.get("issue_id", "") for item in issues if not item.get("verified")],
+        "config": {
+            "vm_count": len(agents),
+            "tasks_per_vm": 1,
+            "request_workers": config.get("parallelism"),
+            "workload_seconds": result.get("duration_sec"),
+            "memory_workers": "-",
+            "memory_mb": "-",
+            "memory_rounds": "-",
+            "memory_mode": "time_window",
+            "llm_context_kb": int(config.get("context_length", 0) or 0) // 1024,
+            "llm_prompt_repeat": 1,
+            "llm_max_tokens": "-",
+            "llm_load_mode": TEAM_V2_WORKLOAD,
+            "llm_request_timeout_seconds": config.get("request_timeout_sec"),
+            "llm_inter_task_sleep_ms": 0,
+            "vcpu_count": "-",
+            "mem_mib": "-",
+        },
+    }
+    return {
+        "name": run_path.name,
+        "display_name": result.get("run_id") or run_path.name,
+        "metadata": result.get("config", {}),
+        "path": str(run_path),
+        "mtime": run_path.stat().st_mtime if run_path.exists() else None,
+        "overview": _build_overview([point]),
+        "points": [point],
+        "team": result.get("team", {}),
+        "issues": issues,
+        "agents": agents,
+        "summary": summary,
+        "files": {
+            "result_json": True,
+            "aligned_metrics_csv": False,
+            "aligned_metrics_json": False,
+            "aligned_metrics_md": False,
+            "sweep_summary_csv": False,
+        },
+    }
+
+
+def _load_team_v2_sweep_report(run_path: Path) -> dict[str, Any]:
+    result = _read_json(run_path / "result.json")
+    points = [_team_v2_sweep_point(item) for item in result.get("points", [])]
+    return {
+        "name": run_path.name,
+        "display_name": result.get("run_id") or run_path.name,
+        "metadata": result.get("config", {}),
+        "path": str(run_path),
+        "mtime": run_path.stat().st_mtime if run_path.exists() else None,
+        "overview": _build_overview(points),
+        "points": sorted(points, key=lambda item: item["agents"]),
+        "team": result.get("team", {}),
+        "issues": [],
+        "agents": [],
+        "summary": result.get("summary", {}),
+        "files": {
+            "result_json": True,
+            "team_sweep_summary_csv": (run_path / "team_sweep_summary.csv").exists(),
+            "aligned_metrics_csv": False,
+            "aligned_metrics_json": False,
+            "aligned_metrics_md": False,
+            "sweep_summary_csv": False,
+        },
+    }
+
+
+def _team_v2_sweep_point(point: dict[str, Any]) -> dict[str, Any]:
+    metrics = point.get("metrics_summary", {}) or {}
+    return {
+        "agents": _number(point.get("agents", 0)),
+        "case_id": point.get("case_id", ""),
+        "context_length": _number(point.get("context_length", 0)),
+        "experiment_mode": point.get("experiment_mode", ""),
+        "repeat": _number(point.get("repeat", 1)),
+        "max_active_llm_requests": _number(point.get("max_active_llm_requests", 0)),
+        "max_active_prefill_tokens": _number(point.get("max_active_prefill_tokens", 0)),
+        "vm_results": _number(point.get("total_issues", 0)),
+        "completed": _number(point.get("total_issues", 0)) - _number(point.get("failed_issues", 0)),
+        "failed": _number(point.get("failed_issues", 0)),
+        "success_rate_pct": _number(point.get("verified_success_rate", 0)),
+        "throughput_task_per_min_run": _number(point.get("candidate_per_min", 0)),
+        "throughput_task_per_min_workload": _number(point.get("candidate_per_min", 0)),
+        "lat_all_p50_ms": _number(point.get("issue_latency_p95_sec", 0)) * 1000,
+        "lat_all_p95_ms": _number(point.get("issue_latency_p95_sec", 0)) * 1000,
+        "lat_ok_p50_ms": _number(point.get("issue_latency_p95_sec", 0)) * 1000,
+        "lat_ok_p95_ms": _number(point.get("issue_latency_p95_sec", 0)) * 1000,
+        "cpu_p50_pct": _metric(metrics, "cpu", "p50"),
+        "cpu_p95_pct": _metric(metrics, "cpu", "p95"),
+        "cpu_max_pct": _metric(metrics, "cpu", "max"),
+        "dram_bw_p50_gbps": _metric(metrics, "dram_bw", "avg"),
+        "dram_bw_p95_gbps": _metric(metrics, "dram_bw", "p95"),
+        "dram_bw_max_gbps": _metric(metrics, "dram_bw", "max"),
+        "dram_bw_max_pct_of_peak": _dram_peak_pct("", _metric(metrics, "dram_bw", "max")),
+        "gpu_util_p95_pct": _metric(metrics, "gpu", "p95"),
+        "gpu_util_max_pct": _metric(metrics, "gpu", "max"),
+        "gpu_active_sample_pct": 0,
+        "gpu_memctrl_p95_pct": 0,
+        "gpu_memctrl_max_pct": 0,
+        "gpu_memctrl_active_sample_pct": 0,
+        "gpu_power_p95_w": 0,
+        "gpu_mem_used_p95_mib": _metric(metrics, "gpu_memory", "p95"),
+        "gpu_mem_used_pct_p95": 0,
+        "gpu_mem_used_pct_max": 0,
+        "sm_active_p95_pct": 0,
+        "sm_active_max_pct": 0,
+        "sm_occupancy_p95_pct": 0,
+        "tensor_active_p95_pct": 0,
+        "tensor_active_max_pct": 0,
+        "dram_active_p95_pct": 0,
+        "dram_active_max_pct": 0,
+        "fp16_active_p95_pct": 0,
+        "fp16_active_max_pct": 0,
+        "fp32_active_p95_pct": 0,
+        "fp32_active_max_pct": 0,
+        "dcgm_samples": _number(metrics.get("gpu_samples", 0)),
+        "vllm_ok": 1,
+        "failed_vm_ids": [],
+        "config": {
+            "vm_count": _number(point.get("agents", 0)),
+            "tasks_per_vm": 1,
+            "request_workers": _number(point.get("parallelism", 0)),
+            "workload_seconds": _number(point.get("duration_sec", 0)),
+            "memory_workers": "-",
+            "memory_mb": "-",
+            "memory_rounds": "-",
+            "memory_mode": "time_window",
+            "llm_context_kb": int(_number(point.get("context_length", 0))) // 1024,
+            "experiment_mode": point.get("experiment_mode", ""),
+            "case_id": point.get("case_id", ""),
+            "max_active_llm_requests": _number(point.get("max_active_llm_requests", 0)),
+            "max_active_prefill_tokens": _number(point.get("max_active_prefill_tokens", 0)),
+            "llm_prompt_repeat": 1,
+            "llm_max_tokens": "-",
+            "llm_load_mode": SWEEP_WORKLOAD_TYPE,
+            "llm_request_timeout_seconds": "-",
+            "llm_inter_task_sleep_ms": 0,
+            "vcpu_count": "-",
+            "mem_mib": "-",
+        },
+    }
+
+
+def _metric(metrics: dict[str, Any], group: str, field: str) -> int | float:
+    try:
+        return _number(metrics.get(group, {}).get(field, 0))
+    except AttributeError:
+        return 0
 
 
 def _point_config(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -666,10 +918,28 @@ def _looks_like_run(path: Path) -> bool:
     return (
         (path / "dashboard-run.json").exists()
         or
+        _is_team_v2_sweep_run(path)
+        or
+        _is_team_v2_run(path)
+        or
         (path / "aligned_metrics.csv").exists()
         or (path / "sweep_summary.csv").exists()
         or any(path.glob("agents_*/results/summary.json"))
     )
+
+
+def _is_team_v2_run(path: Path) -> bool:
+    result_path = path / "result.json"
+    if not result_path.exists():
+        return False
+    return _read_json(result_path).get("workload_type") == TEAM_V2_WORKLOAD
+
+
+def _is_team_v2_sweep_run(path: Path) -> bool:
+    result_path = path / "result.json"
+    if not result_path.exists():
+        return False
+    return _read_json(result_path).get("workload_type") == SWEEP_WORKLOAD_TYPE
 
 
 def _sanitize_label(value: str) -> str:
@@ -714,10 +984,22 @@ def _validate_llm_load_mode(value: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aab-dashboard")
     parser.add_argument("--project-root", default=".")
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8088)
+    parser.add_argument("--host", default=os.environ.get("AAB_UI_HOST", "0.0.0.0"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("AAB_UI_PORT", "80")))
+    parser.add_argument("--fallback-port", type=int, default=int(os.environ.get("AAB_UI_FALLBACK_PORT", "8080")))
+    parser.add_argument(
+        "--disable-port-fallback",
+        action="store_true",
+        default=os.environ.get("AAB_UI_ENABLE_PORT_FALLBACK", "1") in {"0", "false", "False"},
+    )
     args = parser.parse_args(argv)
-    serve(args.project_root, host=args.host, port=args.port)
+    serve_with_fallback(
+        args.project_root,
+        host=args.host,
+        port=args.port,
+        fallback_port=args.fallback_port,
+        enable_fallback=not args.disable_port_fallback,
+    )
     return 0
 
 

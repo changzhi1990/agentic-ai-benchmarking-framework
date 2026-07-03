@@ -13,6 +13,8 @@ GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.9}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-128}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"
+ENABLE_AUTO_TOOL_CHOICE="${ENABLE_AUTO_TOOL_CHOICE:-0}"
+TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-}"
 
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 
@@ -22,6 +24,12 @@ if [[ -n "${MAX_MODEL_LEN}" ]]; then
 fi
 if [[ -n "${MAX_NUM_BATCHED_TOKENS}" ]]; then
   extra_vllm_args+=(--max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}")
+fi
+if [[ "${ENABLE_AUTO_TOOL_CHOICE}" == "1" ]]; then
+  extra_vllm_args+=(--enable-auto-tool-choice)
+fi
+if [[ -n "${TOOL_CALL_PARSER}" ]]; then
+  extra_vllm_args+=(--tool-call-parser "${TOOL_CALL_PARSER}")
 fi
 
 COMMAND=$(

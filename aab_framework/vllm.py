@@ -25,6 +25,8 @@ class VllmDockerConfig:
     dtype: str = "half"
     kv_cache_dtype: str = "auto"
     pipeline_parallel_size: int = 1
+    enable_auto_tool_choice: bool = False
+    tool_call_parser: str | None = None
 
 
 def build_vllm_container_command(config: VllmDockerConfig) -> str:
@@ -54,6 +56,7 @@ def build_vllm_serve_command(config: VllmDockerConfig) -> str:
     parts = [
         f"docker exec -d {quote(config.container_name)}",
         f"vllm serve {quote(model_path)}",
+        f"--served-model-name {quote(config.served_model_name)}",
         f"--dtype {quote(config.dtype)}",
         f"--kv-cache-dtype {quote(config.kv_cache_dtype)}",
         f"-tp {config.tensor_parallel_size}",
@@ -68,6 +71,10 @@ def build_vllm_serve_command(config: VllmDockerConfig) -> str:
     )
     if config.max_num_batched_tokens is not None:
         parts.append(f"--max-num-batched-tokens {config.max_num_batched_tokens}")
+    if config.enable_auto_tool_choice:
+        parts.append("--enable-auto-tool-choice")
+    if config.tool_call_parser:
+        parts.append(f"--tool-call-parser {quote(config.tool_call_parser)}")
     parts.extend(
         [
             f"--gpu-memory-utilization {config.gpu_memory_utilization}",

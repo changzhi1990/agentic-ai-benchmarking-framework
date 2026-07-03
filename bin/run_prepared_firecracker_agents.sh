@@ -5,7 +5,9 @@ RUN_DIR="${RUN_DIR:-runs/firecracker-run}"
 RUN_SECONDS="${RUN_SECONDS:-120}"
 SUDO_PASSWORD="${SUDO_PASSWORD:-}"
 RESULTS_DIR="${RESULTS_DIR:-${RUN_DIR}/results}"
+AGENTS_OUTPUT_DIR="${AGENTS_OUTPUT_DIR:-${RUN_DIR}/agents}"
 mkdir -p "${RESULTS_DIR}"
+mkdir -p "${AGENTS_OUTPUT_DIR}"
 
 manifest="${RUN_DIR}/firecracker-run.json"
 if [[ ! -f "${manifest}" ]]; then
@@ -39,13 +41,54 @@ for index, agent in enumerate(manifest["agents"]):
         agent["socket_path"],
         agent["log_path"],
         agent["rootfs_image"],
-        placement.cpu_set,
-        "" if placement.numa_node is None else str(placement.numa_node),
+        placement.cpu_set or "-",
+        "-" if placement.numa_node is None else str(placement.numa_node),
+        agent.get("task_spec_host_path", ""),
+        agent.get("task_spec_guest_path", "/task/task.json"),
     ]))
 PY
 
+sudo_run() {
+  if [[ -n "${SUDO_PASSWORD}" ]]; then
+    printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+copy_task_spec_into_rootfs() {
+  local vm_id="$1"
+  local rootfs_image="$2"
+  local task_spec_host_path="$3"
+  local task_spec_guest_path="$4"
+  if [[ -z "${task_spec_host_path}" || ! -f "${task_spec_host_path}" ]]; then
+    return 0
+  fi
+  local mount_dir="${mount_base}/${vm_id}-prepare"
+  mkdir -p "${mount_dir}"
+  sudo_run mount -o loop "${rootfs_image}" "${mount_dir}"
+  local guest_task_path="${task_spec_guest_path#/}"
+  sudo_run mkdir -p "${mount_dir}/$(dirname "${guest_task_path}")" "${mount_dir}/task" "${mount_dir}/output" "${mount_dir}/work" "${mount_dir}/var/lib/aab"
+  sudo_run cp "${task_spec_host_path}" "${mount_dir}/${guest_task_path}"
+  sudo_run cp "${task_spec_host_path}" "${mount_dir}/task/task.json"
+  sudo_run cp "${task_spec_host_path}" "${mount_dir}/var/lib/aab/task.json"
+  sudo_run sync
+  sudo_run umount "${mount_dir}"
+}
+
+mount_base="$(mktemp -d)"
+trap 'rm -rf "${mount_base}"' EXIT
+
+while IFS=$'\t' read -r vm_id config_path socket_path log_path rootfs_image cpu_set numa_node task_spec_host_path task_spec_guest_path; do
+  if [[ "${cpu_set}" == "-" ]]; then cpu_set=""; fi
+  if [[ "${numa_node}" == "-" ]]; then numa_node=""; fi
+  copy_task_spec_into_rootfs "${vm_id}" "${rootfs_image}" "${task_spec_host_path}" "${task_spec_guest_path}"
+done < "${RUN_DIR}/agent-list.tsv"
+
 pids=()
-while IFS=$'\t' read -r vm_id config_path socket_path log_path rootfs_image cpu_set numa_node; do
+while IFS=$'\t' read -r vm_id config_path socket_path log_path rootfs_image cpu_set numa_node task_spec_host_path task_spec_guest_path; do
+  if [[ "${cpu_set}" == "-" ]]; then cpu_set=""; fi
+  if [[ "${numa_node}" == "-" ]]; then numa_node=""; fi
   rm -f "${socket_path}" "${log_path}"
   launch_prefix=()
   if [[ -n "${cpu_set}" && "${AAB_CPU_PINNING:-0}" != "0" ]]; then
@@ -72,7 +115,9 @@ done < "${RUN_DIR}/agent-list.tsv"
 
 sleep "${RUN_SECONDS}"
 
-while IFS=$'\t' read -r vm_id config_path socket_path log_path rootfs_image cpu_set numa_node; do
+while IFS=$'\t' read -r vm_id config_path socket_path log_path rootfs_image cpu_set numa_node task_spec_host_path task_spec_guest_path; do
+  if [[ "${cpu_set}" == "-" ]]; then cpu_set=""; fi
+  if [[ "${numa_node}" == "-" ]]; then numa_node=""; fi
   if [[ -n "${SUDO_PASSWORD}" ]]; then
     printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' pkill -TERM -f "${socket_path}" >/dev/null 2>&1 || true
   else
@@ -85,26 +130,32 @@ for pid in "${pids[@]}"; do
   wait "${pid}" >/dev/null 2>&1 || true
 done
 
-mount_base="$(mktemp -d)"
-trap 'rm -rf "${mount_base}"' EXIT
-while IFS=$'\t' read -r vm_id config_path socket_path log_path rootfs_image cpu_set numa_node; do
+while IFS=$'\t' read -r vm_id config_path socket_path log_path rootfs_image cpu_set numa_node task_spec_host_path task_spec_guest_path; do
+  if [[ "${cpu_set}" == "-" ]]; then cpu_set=""; fi
+  if [[ "${numa_node}" == "-" ]]; then numa_node=""; fi
   mount_dir="${mount_base}/${vm_id}"
   mkdir -p "${mount_dir}"
-  if [[ -n "${SUDO_PASSWORD}" ]]; then
-    printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' mount -o loop "${rootfs_image}" "${mount_dir}"
-    if [[ -f "${mount_dir}/var/lib/aab/result.json" ]]; then
-      printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' cp "${mount_dir}/var/lib/aab/result.json" "${RESULTS_DIR}/${vm_id}.result.json"
-    fi
-    if [[ -f "${mount_dir}/var/lib/aab/trace.jsonl" ]]; then
-      printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' cp "${mount_dir}/var/lib/aab/trace.jsonl" "${RESULTS_DIR}/${vm_id}.trace.jsonl"
-    fi
-    printf '%s\n' "${SUDO_PASSWORD}" | sudo -S -p '' umount "${mount_dir}"
-  else
-    sudo mount -o loop "${rootfs_image}" "${mount_dir}"
-    sudo cp "${mount_dir}/var/lib/aab/result.json" "${RESULTS_DIR}/${vm_id}.result.json" 2>/dev/null || true
-    sudo cp "${mount_dir}/var/lib/aab/trace.jsonl" "${RESULTS_DIR}/${vm_id}.trace.jsonl" 2>/dev/null || true
-    sudo umount "${mount_dir}"
+  sudo_run mount -o loop "${rootfs_image}" "${mount_dir}"
+  agent_output_dir="${AGENTS_OUTPUT_DIR}/${vm_id}"
+  mkdir -p "${agent_output_dir}"
+  if [[ -d "${mount_dir}/output" ]]; then
+    for name in trajectory.jsonl patch.diff test.log stdout.log stderr.log result.json diagnosis.txt review_result.json verifier_result.json metadata.json; do
+      if [[ -f "${mount_dir}/output/${name}" ]]; then
+        sudo_run cp "${mount_dir}/output/${name}" "${agent_output_dir}/${name}"
+      fi
+    done
   fi
+  if [[ -f "${mount_dir}/output/result.json" ]]; then
+    sudo_run cp "${mount_dir}/output/result.json" "${RESULTS_DIR}/${vm_id}.result.json"
+  elif [[ -f "${mount_dir}/var/lib/aab/result.json" ]]; then
+    sudo_run cp "${mount_dir}/var/lib/aab/result.json" "${RESULTS_DIR}/${vm_id}.result.json"
+  fi
+  if [[ -f "${mount_dir}/output/trajectory.jsonl" ]]; then
+    sudo_run cp "${mount_dir}/output/trajectory.jsonl" "${RESULTS_DIR}/${vm_id}.trace.jsonl"
+  elif [[ -f "${mount_dir}/var/lib/aab/trace.jsonl" ]]; then
+    sudo_run cp "${mount_dir}/var/lib/aab/trace.jsonl" "${RESULTS_DIR}/${vm_id}.trace.jsonl"
+  fi
+  sudo_run umount "${mount_dir}"
 done < "${RUN_DIR}/agent-list.tsv"
 
 python3 - "$RESULTS_DIR" <<'PY'

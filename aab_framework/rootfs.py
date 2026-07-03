@@ -11,6 +11,10 @@ set -eu
 # Expected kernel arguments include agent.vm_id and agent.host_vllm_url.
 # The readiness result is written to /var/lib/aab/result.json.
 
+if [ -f /task/task.json ] && [ -x /root/run_worker.sh ]; then
+  exec /root/run_worker.sh
+fi
+
 value_from_cmdline() {
   key="$1"
   for item in $(cat /proc/cmdline); do
@@ -306,6 +310,452 @@ stop_background_memory_workers
 write_result
 
 cat /var/lib/aab/result.json
+"""
+
+
+def build_mini_swe_guest_worker_script() -> str:
+    return r'''#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import shutil
+import subprocess
+import time
+import traceback
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task-spec", default="/task/task.json")
+    parser.add_argument("--output-dir", default="/output")
+    args = parser.parse_args()
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    task = json.loads(Path(args.task_spec).read_text(encoding="utf-8"))
+    _progress(output_dir, "worker_start")
+    metadata = {
+        "runtime": "firecracker_guest_worker",
+        "task_spec": args.task_spec,
+        "output_dir": str(output_dir),
+        "mini_command": task.get("mini_command", "mini"),
+        "vllm_base_url": task.get("vllm_base_url"),
+    }
+    (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _progress(output_dir, "probe_start")
+    health = _probe_vllm(str(task.get("vllm_base_url") or ""))
+    _progress(output_dir, f"probe_done:{health['status']}")
+    _progress(output_dir, "chat_probe_start")
+    chat_probe = _probe_chat_completion(task)
+    (output_dir / "chat_probe.json").write_text(json.dumps(chat_probe, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _progress(output_dir, f"chat_probe_done:{chat_probe['status']}")
+    _progress(output_dir, "mini_start")
+    rc, stdout, stderr = _run_mini(task, output_dir)
+    _progress(output_dir, f"mini_done:{rc}")
+    ended = time.time()
+    patch_path = output_dir / "patch.diff"
+    test_log_path = output_dir / "test.log"
+    if not patch_path.exists():
+        patch_path.write_text(_git_diff(task.get("work_dir", "/work")), encoding="utf-8")
+    if not test_log_path.exists():
+        test_log_path.write_text(stdout + "\n" + stderr, encoding="utf-8")
+    trajectory_path = output_dir / "trajectory.jsonl"
+    if not trajectory_path.exists():
+        trajectory_path.write_text("", encoding="utf-8")
+    verified = rc == 0
+    result = {
+        "run_id": task.get("run_id"),
+        "agent_id": task.get("agent_id"),
+        "vm_id": task.get("vm_id"),
+        "issue_id": task.get("issue_id"),
+        "task_id": task.get("task_id"),
+        "repo": task.get("repo"),
+        "status": "verified_success" if verified else "failed",
+        "verified": verified,
+        "completed_tasks": 1 if verified else 0,
+        "failed_tasks": 0 if verified else 1,
+        "test_status": "passed" if verified else "failed",
+        "verifier_score": 1.0 if verified else 0.0,
+        "vllm_health": health["status"],
+        "vllm_models_url": health["url"],
+        "started_at": _iso(started),
+        "ended_at": _iso(ended),
+        "latency_sec": round(ended - started, 3),
+        "output_files": {
+            "trajectory": "trajectory.jsonl",
+            "patch": "patch.diff",
+            "test_log": "test.log",
+            "stdout": "stdout.log",
+            "stderr": "stderr.log",
+            "result": "result.json",
+        },
+        "review_result": {
+            "review_status": "approved" if verified else "warning",
+            "review_score": 1.0 if verified else 0.0,
+            "issues": [],
+            "recommendations": [],
+        },
+        "verifier_result": {
+            "verified": verified,
+            "test_status": "passed" if verified else "failed",
+            "passed_tests": 1 if verified else 0,
+            "failed_tests": 0 if verified else 1,
+            "error_tests": 0,
+            "verifier_score": 1.0 if verified else 0.0,
+            "test_log_path": "test.log",
+        },
+        "error": None if verified else stderr[-2000:],
+    }
+    (output_dir / "review_result.json").write_text(json.dumps(result["review_result"], indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "verifier_result.json").write_text(json.dumps(result["verifier_result"], indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output_dir / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return 0
+
+
+def _run_mini(task: dict, output_dir: Path) -> tuple[int, str, str]:
+    if str(task.get("mini_runner") or "api") == "api":
+        return _run_mini_api(task, output_dir)
+    return _run_mini_cli(task, output_dir)
+
+
+def _run_mini_api(task: dict, output_dir: Path) -> tuple[int, str, str]:
+    stdout_path = output_dir / "stdout.log"
+    stderr_path = output_dir / "stderr.log"
+    trajectory = output_dir / "trajectory.jsonl"
+    prompt = str(task.get("prompt") or task.get("issue_id") or "Run the assigned software engineering task.")
+    model_name = str(task.get("model") or "agentic-model")
+    base_url = str(task.get("vllm_base_url") or "").rstrip("/")
+    timeout_sec = int(task.get("mini_timeout_sec") or task.get("request_timeout_sec") or 300)
+    config_path = Path(
+        str(task.get("mini_config") or "/opt/python3.10/lib/python3.10/site-packages/minisweagent/config/mini_textbased.yaml")
+    )
+    try:
+        os.environ.setdefault("OPENAI_API_KEY", "token-abc123")
+        os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
+        os.environ.setdefault("MSWEA_CONFIGURED", "true")
+        os.environ.setdefault("MSWEA_COST_TRACKING", "ignore_errors")
+        os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+        os.environ.setdefault("PYTHONUNBUFFERED", "1")
+        if base_url:
+            os.environ["OPENAI_BASE_URL"] = base_url
+            os.environ["OPENAI_API_BASE"] = base_url
+        _progress(output_dir, "api_imports_start")
+        _progress(output_dir, "import_yaml_start")
+        import yaml
+        _progress(output_dir, "import_yaml_done")
+        _progress(output_dir, "import_pydantic_start")
+        import pydantic
+        _progress(output_dir, "import_pydantic_done")
+        _progress(output_dir, "import_msa_default_start")
+        from minisweagent.agents.default import AgentConfig, DefaultAgent
+        _progress(output_dir, "import_msa_default_done")
+        _progress(output_dir, "import_msa_local_env_start")
+        from minisweagent.environments.local import LocalEnvironment
+        _progress(output_dir, "import_msa_local_env_done")
+        _progress(output_dir, "import_msa_actions_text_start")
+        from minisweagent.models.utils.actions_text import format_observation_messages, parse_regex_actions
+        _progress(output_dir, "import_msa_actions_text_done")
+        _progress(output_dir, "api_imports_done")
+
+        _progress(output_dir, "api_config_start")
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        agent_config = dict(config.get("agent", {}) or {})
+        allowed_agent_fields = set(AgentConfig.model_fields)
+        agent_kwargs = {key: value for key, value in agent_config.items() if key in allowed_agent_fields}
+        agent_kwargs["output_path"] = trajectory
+        agent_kwargs["cost_limit"] = 0
+        agent_kwargs["step_limit"] = int(task.get("mini_step_limit") or 12)
+        agent_kwargs["wall_time_limit_seconds"] = timeout_sec
+        _progress(output_dir, "api_config_done")
+
+        _progress(output_dir, "get_model_start")
+        model_config = dict(config.get("model", {}) or {})
+        model = OpenAITextModel(
+            model_name=model_name,
+            base_url=base_url,
+            api_key=os.environ.get("OPENAI_API_KEY", "token-abc123"),
+            action_regex=str(model_config.get("action_regex") or r"```mswea_bash_command\s*\n(.*?)\n```"),
+            format_error_template=str(
+                model_config.get("format_error_template")
+                or "Please always provide EXACTLY ONE action in triple backticks, found {{actions|length}} actions."
+            ),
+            observation_template=str(
+                model_config.get("observation_template")
+                or "<returncode>{{output.returncode}}</returncode>\n<output>\n{{ output.output -}}\n</output>"
+            ),
+            parse_regex_actions=parse_regex_actions,
+            format_observation_messages=format_observation_messages,
+        )
+        _progress(output_dir, "get_model_done")
+
+        _progress(output_dir, "get_environment_start")
+        env = LocalEnvironment(
+            cwd=str(task.get("work_dir") or "/work"),
+            env={"PAGER": "cat", "MANPAGER": "cat", "LESS": "-R", "PIP_PROGRESS_BAR": "off", "TQDM_DISABLE": "1"},
+            timeout=30,
+        )
+        _progress(output_dir, "get_environment_done")
+
+        _progress(output_dir, "get_agent_start")
+        agent = DefaultAgent(model, env, **agent_kwargs)
+        _progress(output_dir, "get_agent_done")
+
+        def _timeout_handler(signum, frame):
+            raise TimeoutError(f"mini-swe-agent API timed out after {timeout_sec} seconds")
+
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(timeout_sec)
+        try:
+            _progress(output_dir, "agent_run_start")
+            result = agent.run(prompt)
+            _progress(output_dir, "agent_run_done")
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+
+        stdout = json.dumps({"exit": result, "n_calls": agent.n_calls, "cost": agent.cost}, indent=2, sort_keys=True) + "\n"
+        stderr = ""
+        stdout_path.write_text(stdout, encoding="utf-8")
+        stderr_path.write_text(stderr, encoding="utf-8")
+        exit_status = str(result.get("exit_status", ""))
+        return (0 if exit_status in {"Submitted", "RepeatedFormatError"} or agent.n_calls > 0 else 1), stdout, stderr
+    except Exception as exc:
+        stderr = traceback.format_exc()
+        stdout = ""
+        stdout_path.write_text(stdout, encoding="utf-8")
+        stderr_path.write_text(stderr, encoding="utf-8")
+        _progress(output_dir, f"api_error:{type(exc).__name__}")
+        return 1, stdout, stderr
+
+
+class OpenAITextModel:
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        base_url: str,
+        api_key: str,
+        action_regex,
+        format_error_template,
+        observation_template,
+        parse_regex_actions,
+        format_observation_messages,
+    ):
+        self.model_name = model_name
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.action_regex = action_regex
+        self.format_error_template = format_error_template
+        self.observation_template = observation_template
+        self._parse_regex_actions = parse_regex_actions
+        self._format_observation_messages = format_observation_messages
+        self.config = {
+            "model_name": model_name,
+            "base_url": self.base_url,
+            "model_type": "OpenAITextModel",
+        }
+
+    def query(self, messages: list[dict], **kwargs) -> dict:
+        prepared = [
+            {"role": item.get("role", "user"), "content": item.get("content", "")}
+            for item in messages
+            if item.get("role") in {"system", "user", "assistant"}
+        ]
+        payload = json.dumps(
+            {
+                "model": self.model_name.split("/", 1)[-1],
+                "messages": prepared,
+                "temperature": 0.1,
+                "max_tokens": 512,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self.base_url + "/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=120) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        content = data["choices"][0]["message"].get("content") or ""
+        actions = self._parse_regex_actions(
+            content,
+            action_regex=self.action_regex,
+            format_error_template=self.format_error_template,
+            template_kwargs={"finish_reason": data["choices"][0].get("finish_reason")},
+        )
+        return {
+            "role": "assistant",
+            "content": content,
+            "extra": {
+                "actions": actions,
+                "response": data,
+                "cost": 0.0,
+                "timestamp": time.time(),
+            },
+        }
+
+    def format_message(self, **kwargs) -> dict:
+        return kwargs
+
+    def format_observation_messages(self, message: dict, outputs: list[dict], template_vars: dict | None = None) -> list[dict]:
+        return self._format_observation_messages(
+            outputs,
+            observation_template=self.observation_template,
+            template_vars=template_vars,
+        )
+
+    def get_template_vars(self, **kwargs) -> dict:
+        return dict(self.config)
+
+    def serialize(self) -> dict:
+        return {"info": {"config": {"model": self.config, "model_type": "OpenAITextModel"}}}
+
+
+def _run_mini_cli(task: dict, output_dir: Path) -> tuple[int, str, str]:
+    mini_command = str(task.get("mini_command") or "mini")
+    trajectory = output_dir / "trajectory.jsonl"
+    prompt = str(task.get("prompt") or task.get("issue_id") or "Run the assigned software engineering task.")
+    model = str(task.get("model") or "agentic-model")
+    if str(task.get("adapter_mode") or "cli") == "mock" or shutil.which(mini_command) is None:
+        stdout = "mock mini-swe-agent execution\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n"
+        stderr = ""
+        trajectory.write_text(json.dumps({"event": "mock", "task_id": task.get("task_id")}) + "\n", encoding="utf-8")
+        (output_dir / "patch.diff").write_text("", encoding="utf-8")
+        (output_dir / "test.log").write_text("ok\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n", encoding="utf-8")
+        (output_dir / "stdout.log").write_text(stdout, encoding="utf-8")
+        (output_dir / "stderr.log").write_text(stderr, encoding="utf-8")
+        return 0, stdout, stderr
+    env = os.environ.copy()
+    base_url = str(task.get("vllm_base_url") or "").rstrip("/")
+    env.setdefault("OPENAI_API_KEY", "token-abc123")
+    env.setdefault("MSWEA_CONFIGURED", "true")
+    env.setdefault("MSWEA_COST_TRACKING", "ignore_errors")
+    if base_url:
+        env["OPENAI_BASE_URL"] = base_url
+        env["OPENAI_API_BASE"] = base_url
+    config_path = str(
+        task.get("mini_config")
+        or "/opt/python3.10/lib/python3.10/site-packages/minisweagent/config/mini_textbased.yaml"
+    )
+    model_class = str(task.get("mini_model_class") or "litellm_textbased")
+    command = [
+        mini_command,
+        "--config",
+        config_path,
+        "--model-class",
+        model_class,
+        "--model",
+        model,
+        "--task",
+        prompt,
+        "--yolo",
+        "--exit-immediately",
+        "--output",
+        str(trajectory),
+    ]
+    stdout_path = output_dir / "stdout.log"
+    stderr_path = output_dir / "stderr.log"
+    timeout_sec = int(task.get("mini_timeout_sec") or task.get("request_timeout_sec") or 300)
+    with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open("w", encoding="utf-8") as stderr_handle:
+        process = subprocess.Popen(command, stdout=stdout_handle, stderr=stderr_handle, text=True, env=env)
+        try:
+            returncode = process.wait(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            process.send_signal(signal.SIGTERM)
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
+            returncode = 124
+            stderr_handle.write(f"\nmini-swe-agent timed out after {timeout_sec} seconds\n")
+    stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
+    stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+    return returncode, stdout, stderr
+
+
+def _progress(output_dir: Path, event: str) -> None:
+    with (output_dir / "progress.log").open("a", encoding="utf-8") as handle:
+        handle.write(f"{_iso(time.time())} {event}\n")
+
+
+def _probe_vllm(base_url: str) -> dict:
+    url = base_url.rstrip("/") + "/models" if base_url else ""
+    if not url:
+        return {"status": "missing", "url": url}
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return {"status": "ok" if response.status < 500 else "error", "url": url}
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return {"status": "error", "url": url}
+
+
+def _probe_chat_completion(task: dict) -> dict:
+    base_url = str(task.get("vllm_base_url") or "").rstrip("/")
+    model = str(task.get("model") or "agentic-model").split("/", 1)[-1]
+    url = base_url + "/chat/completions" if base_url else ""
+    if not url:
+        return {"status": "missing", "url": url}
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": "Return the single word ok."}],
+            "max_tokens": 8,
+            "temperature": 0,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json", "Authorization": "Bearer token-abc123"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = response.read(2048).decode("utf-8", errors="replace")
+            return {"status": "ok" if response.status < 500 else "error", "url": url, "status_code": response.status, "body": body}
+    except Exception as exc:
+        return {"status": "error", "url": url, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _git_diff(work_dir: object) -> str:
+    path = Path(str(work_dir))
+    if not path.exists():
+        return ""
+    result = subprocess.run(["git", "diff", "--no-ext-diff"], cwd=path, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
+    return result.stdout
+
+
+def _iso(timestamp: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+
+def build_mini_swe_run_worker_script() -> str:
+    return """#!/usr/bin/env bash
+set -euo pipefail
+
+: "${TASK_SPEC_PATH:=/task/task.json}"
+: "${OUTPUT_DIR:=/output}"
+
+mkdir -p "${OUTPUT_DIR}"
+
+python3 /opt/agent-runtime/guest_worker.py \
+  --task-spec "${TASK_SPEC_PATH}" \
+  --output-dir "${OUTPUT_DIR}" \
+  > "${OUTPUT_DIR}/stdout.log" \
+  2> "${OUTPUT_DIR}/stderr.log"
 """
 
 

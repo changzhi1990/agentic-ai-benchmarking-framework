@@ -503,7 +503,9 @@ class DashboardTests(unittest.TestCase):
     def test_start_dashboard_script_defaults_to_port_80(self) -> None:
         script = Path("bin/start_dashboard.sh").read_text(encoding="utf-8")
 
-        self.assertIn('PORT="${PORT:-80}"', script)
+        self.assertIn('AAB_UI_PORT="${AAB_UI_PORT:-${PORT:-80}}"', script)
+        self.assertIn('AAB_UI_FALLBACK_PORT="${AAB_UI_FALLBACK_PORT:-8080}"', script)
+        self.assertIn('--fallback-port "${AAB_UI_FALLBACK_PORT}"', script)
 
     def test_dashboard_exposes_registered_workload_and_executor_plugins(self) -> None:
         from aab_framework.dashboard import dashboard_plugins_payload
@@ -519,13 +521,16 @@ class DashboardTests(unittest.TestCase):
         script = Path("aab_framework/dashboard_static/app.js").read_text(encoding="utf-8")
         html = Path("aab_framework/dashboard_static/index.html").read_text(encoding="utf-8")
 
+        self.assertNotIn("Firecracker Mapping", html)
+        self.assertNotIn("mappingTable", html)
+        self.assertNotIn("renderMappingTable", script)
         self.assertIn("GPU Metrics", html)
         self.assertIn("gpuUtilChart", html)
         self.assertIn("gpuMemoryChart", html)
-        self.assertIn("gpuActivityChart", html)
+        self.assertNotIn("gpuActivityChart", html)
         self.assertIn('drawChart("gpuUtilChart"', script)
         self.assertIn('drawChart("gpuMemoryChart"', script)
-        self.assertIn('drawChart("gpuActivityChart"', script)
+        self.assertNotIn('drawChart("gpuActivityChart"', script)
         for key in [
             "gpu_util_p95_pct",
             "gpu_util_max_pct",
@@ -542,16 +547,6 @@ class DashboardTests(unittest.TestCase):
             "gpu_mem_used_pct_max",
         ]:
             self.assertIn(f'key: "{key}"', script)
-        for key in [
-            "sm_active_p95_pct",
-            "sm_occupancy_p95_pct",
-            "tensor_active_p95_pct",
-            "dram_active_p95_pct",
-            "fp16_active_p95_pct",
-            "fp32_active_p95_pct",
-        ]:
-            self.assertIn(f'key: "{key}"', script)
-
         self.assertIn("GPU Active Max", script)
         self.assertNotIn("GPU Mem BW Max", script)
         self.assertIn("GPU MemCtrl Max", script)
@@ -567,15 +562,15 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("GPU Metrics", html)
         self.assertIn("GPU Utilization", html)
         self.assertIn("GPU Memory", html)
-        self.assertIn("GPU Engine Activity", html)
+        self.assertNotIn("GPU Engine Activity", html)
         self.assertIn("gpuUtilChart", html)
         self.assertIn("gpuMemoryChart", html)
-        self.assertIn("gpuActivityChart", html)
+        self.assertNotIn("gpuActivityChart", html)
         self.assertIn('drawChart("businessChart"', script)
         self.assertIn('drawChart("cpuChart"', script)
         self.assertIn('drawChart("gpuUtilChart"', script)
         self.assertIn('drawChart("gpuMemoryChart"', script)
-        self.assertIn('drawChart("gpuActivityChart"', script)
+        self.assertNotIn('drawChart("gpuActivityChart"', script)
         self.assertNotIn('drawChart("gpuChart"', script)
         for removed in [
             "successChart",
@@ -600,9 +595,6 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("latency p95 s", script)
         self.assertIn("cpu max", script)
         self.assertIn("dram max", script)
-        self.assertIn("SM Active P95", script)
-        self.assertIn("Tensor Active P95", script)
-        self.assertIn("DRAM Active P95", script)
         for key in [
             "sm_active_p95_pct",
             "sm_occupancy_p95_pct",
@@ -611,7 +603,7 @@ class DashboardTests(unittest.TestCase):
             "fp16_active_p95_pct",
             "fp32_active_p95_pct",
         ]:
-            self.assertIn(f'key: "{key}"', script)
+            self.assertNotIn(f'key: "{key}"', script)
 
     def test_sweep_results_table_removes_fail_column_and_title_cases_headers(self) -> None:
         script = Path("aab_framework/dashboard_static/app.js").read_text(encoding="utf-8")

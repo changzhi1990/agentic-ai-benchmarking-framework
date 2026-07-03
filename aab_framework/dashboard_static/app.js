@@ -84,7 +84,7 @@ function renderReport(report) {
   $("kpiFailed").textContent = report.overview.total_failed;
   $("kpiThroughput").textContent = fmt(report.overview.max_throughput_task_per_min_workload);
   renderResultsTable(report.points);
-  renderMappingTable(report.points);
+  renderTeamTables(report);
   renderFailures(report.points);
   renderPointSelect(report.points);
   drawChart("businessChart", report.points, [
@@ -113,20 +113,45 @@ function renderReport(report) {
     { key: "gpu_memctrl_max_pct", label: "memctrl max", color: "#ff8f6d" },
     { key: "gpu_memctrl_active_sample_pct", label: "memctrl active samples", color: "#f0a35a" },
   ]);
-  drawChart("gpuActivityChart", report.points, [
-    { key: "sm_active_p95_pct", label: "sm active p95", color: "#6da7ff" },
-    { key: "sm_occupancy_p95_pct", label: "sm occupancy p95", color: "#54c6eb" },
-    { key: "tensor_active_p95_pct", label: "tensor active p95", color: "#3aa675" },
-    { key: "dram_active_p95_pct", label: "dram active p95", color: "#d85f5f" },
-    { key: "fp16_active_p95_pct", label: "fp16 pipe p95", color: "#e0c35a" },
-    { key: "fp32_active_p95_pct", label: "fp32 pipe p95", color: "#b378ff" },
-  ]);
+}
+
+function renderTeamTables(report) {
+  const agents = report.agents || [];
+  const issues = report.issues || [];
+  $("teamTable").innerHTML = agents.length
+    ? table(
+        ["agent", "status", "assigned", "verified", "context", "latency"],
+        agents.map((agent) => [
+          agent.agent_id || "-",
+          agent.status || "-",
+          (agent.assigned_issues || []).join(" "),
+          agent.verified_success_issues ?? "-",
+          agent.effective_context_length ?? "-",
+          `${fmt(agent.latency_sec)} s`,
+        ])
+      )
+    : `<div class="muted">No Agent Team v2 agent rows for this run.</div>`;
+  $("issueTable").innerHTML = issues.length
+    ? table(
+        ["issue", "agent", "status", "rounds", "verified", "latency"],
+        issues.map((issue) => [
+          issue.issue_id || "-",
+          issue.agent_id || "-",
+          issue.status || "-",
+          (issue.rounds || []).length,
+          issue.verified ? "yes" : "no",
+          `${fmt(issue.latency_sec)} s`,
+        ])
+      )
+    : `<div class="muted">No Agent Team v2 issue rows for this run.</div>`;
 }
 
 function renderResultsTable(points) {
   $("resultsTable").innerHTML = table(
     [
       "Agents",
+      "Context",
+      "Mode",
       "Success",
       "Thr/Run",
       "Thr/Work",
@@ -140,6 +165,8 @@ function renderResultsTable(points) {
     ],
     points.map((p) => [
       p.agents,
+      p.context_length || ((p.config.llm_context_kb || 0) * 1024) || "-",
+      p.experiment_mode || p.config.experiment_mode || "-",
       `${fmt(p.success_rate_pct)}%`,
       fmt(p.throughput_task_per_min_run),
       fmt(p.throughput_task_per_min_workload),
@@ -150,22 +177,6 @@ function renderResultsTable(points) {
       `${fmt(p.tensor_active_p95_pct)}%`,
       `${fmt(p.dram_active_p95_pct)}%`,
       `${fmt(p.gpu_memctrl_max_pct)}%`,
-    ])
-  );
-}
-
-function renderMappingTable(points) {
-  $("mappingTable").innerHTML = table(
-    ["agents", "vm_count", "agent/vm", "vCPU/vm", "mem/vm", "mem workers", "context KiB", "max tokens"],
-    points.map((p) => [
-      p.agents,
-      p.config.vm_count || "-",
-      p.config.tasks_per_vm || "-",
-      p.config.vcpu_count || "-",
-      p.config.mem_mib ? `${p.config.mem_mib} MiB` : "-",
-      p.config.memory_workers || "-",
-      p.config.llm_context_kb ?? "-",
-      p.config.llm_max_tokens ?? "-",
     ])
   );
 }
@@ -190,7 +201,8 @@ function renderPointSelect(points) {
   const previous = select.value;
   select.innerHTML = "";
   for (const point of points) {
-    addOption(select, String(point.agents), `agents_${point.agents}`);
+    const label = point.case_id || `agents_${point.agents}`;
+    addOption(select, String(point.agents), label);
   }
   if ([...select.options].some((item) => item.value === previous)) {
     select.value = previous;

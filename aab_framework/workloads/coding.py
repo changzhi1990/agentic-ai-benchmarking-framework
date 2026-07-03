@@ -78,7 +78,7 @@ def build_coding_prompt_template() -> str:
 
 def build_coding_chat_payload_template() -> str:
     return (
-        '{"model":"/workspace/models/Qwen2.5-Coder-32B-Instruct/",'
+        '{"model":"agentic-model",'
         '"messages":[{"role":"system","content":"You are a coding bugfix agent. Return JSON fields diagnosis, patch_plan, verification."},'
         '{"role":"user","content":"${prompt}"}],'
         '"temperature":0.1,"max_tokens":${llm_max_tokens}}'
@@ -152,7 +152,7 @@ build_coding_prompt() {{
 build_coding_payload() {{
   prompt="$1"
 cat <<EOF_PAYLOAD
-{{"model":"/workspace/models/Qwen2.5-Coder-32B-Instruct/","messages":[{{"role":"system","content":"You are a coding bugfix agent. Return JSON fields diagnosis, patch_plan, verification."}},{{"role":"user","content":"${{prompt}}"}}],"temperature":0.1,"max_tokens":${{llm_max_tokens}}}}
+{{"model":"agentic-model","messages":[{{"role":"system","content":"You are a coding bugfix agent. Return JSON fields diagnosis, patch_plan, verification."}},{{"role":"user","content":"${{prompt}}"}}],"temperature":0.1,"max_tokens":${{llm_max_tokens}}}}
 EOF_PAYLOAD
 }}
 

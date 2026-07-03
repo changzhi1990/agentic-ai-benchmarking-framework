@@ -56,6 +56,7 @@ class ScaffoldTests(unittest.TestCase):
 
         self.assertIn("docker exec -d aab-vllm", command)
         self.assertIn("vllm serve /workspace/models/Qwen2.5-Coder-32B-Instruct/", command)
+        self.assertIn("--served-model-name agentic-model", command)
         self.assertIn("--dtype half", command)
         self.assertIn("--kv-cache-dtype auto", command)
         self.assertIn("-tp 8", command)
@@ -81,6 +82,15 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("--max-model-len 32768", command)
         self.assertIn("--max-num-seqs 64", command)
         self.assertIn("--max-num-batched-tokens 131072", command)
+        command_with_tools = build_vllm_serve_command(
+            VllmDockerConfig(
+                model="/home/user/models/Qwen2.5-Coder-32B-Instruct",
+                enable_auto_tool_choice=True,
+                tool_call_parser="hermes",
+            )
+        )
+        self.assertIn("--enable-auto-tool-choice", command_with_tools)
+        self.assertIn("--tool-call-parser hermes", command_with_tools)
 
     def test_start_vllm_script_defaults_nccl_p2p_level_to_sys(self) -> None:
         script = Path("bin/start_vllm_8x5090.sh").read_text(encoding="utf-8")
@@ -90,9 +100,13 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn('GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.9}"', script)
         self.assertIn('MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"', script)
         self.assertIn('MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"', script)
+        self.assertIn('ENABLE_AUTO_TOOL_CHOICE="${ENABLE_AUTO_TOOL_CHOICE:-0}"', script)
+        self.assertIn('TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-}"', script)
         self.assertIn('--gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}"', script)
         self.assertIn('extra_vllm_args+=(--max-model-len "${MAX_MODEL_LEN}")', script)
         self.assertIn('extra_vllm_args+=(--max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}")', script)
+        self.assertIn('extra_vllm_args+=(--enable-auto-tool-choice)', script)
+        self.assertIn('extra_vllm_args+=(--tool-call-parser "${TOOL_CALL_PARSER}")', script)
 
     def test_cli_exposes_vllm_gpu_memory_tuning_options(self) -> None:
         script = Path("aab_framework/cli.py").read_text(encoding="utf-8")
@@ -101,6 +115,8 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn('vllm_parser.add_argument("--max-model-len"', script)
         self.assertIn('vllm_parser.add_argument("--max-num-seqs"', script)
         self.assertIn('vllm_parser.add_argument("--max-num-batched-tokens"', script)
+        self.assertIn('vllm_parser.add_argument("--enable-auto-tool-choice"', script)
+        self.assertIn('vllm_parser.add_argument("--tool-call-parser"', script)
 
     def test_plan_agents_assigns_unique_vm_ids_and_guest_ips(self) -> None:
         specs = plan_agents(
@@ -424,6 +440,72 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn("AAB_NUMA_POLICY", script)
         self.assertIn("taskset", script)
         self.assertIn("numactl", script)
+
+    def test_prepared_firecracker_runner_collects_guest_output_directory(self) -> None:
+        script = Path("bin/run_prepared_firecracker_agents.sh").read_text(encoding="utf-8")
+
+        self.assertIn("/output", script)
+        self.assertIn("trajectory.jsonl", script)
+        self.assertIn("patch.diff", script)
+        self.assertIn("test.log", script)
+        self.assertIn("stdout.log", script)
+        self.assertIn("stderr.log", script)
+        self.assertIn("task_spec_host_path", script)
+
+    def test_mini_swe_team_metrics_wrapper_starts_existing_collectors(self) -> None:
+        script = Path("bin/run_mini_swe_agent_team_v2_sweep_with_metrics.sh").read_text(encoding="utf-8")
+
+        self.assertIn("start_cpu_metrics", script)
+        self.assertIn("start_gpu_metrics", script)
+        self.assertIn("start_pcm", script)
+        self.assertIn("metrics/cpu.csv", script)
+        self.assertIn("metrics/gpu.csv", script)
+        self.assertIn("amd_pcm_memory.csv", script)
+        self.assertIn("refresh_run_metrics", script)
+        self.assertIn('ADAPTER_MODE="${ADAPTER_MODE:-mock}"', script)
+        self.assertIn('--adapter-mode "${ADAPTER_MODE}"', script)
+        self.assertIn('RUNTIME_TYPE="${RUNTIME_TYPE:-process}"', script)
+        self.assertIn('--runtime-type "${RUNTIME_TYPE}"', script)
+        self.assertIn('AAB_REPO_CONTEXT_ENABLED="${AAB_REPO_CONTEXT_ENABLED:-0}"', script)
+        self.assertIn("--repo-context-enabled", script)
+        self.assertIn("--repo-source", script)
+        self.assertIn('AAB_REPO_WORKSPACE_MODE="${AAB_REPO_WORKSPACE_MODE:-worktree}"', script)
+        self.assertIn("--repo-workspace-mode", script)
+        self.assertIn('AAB_REPO_CONTEXT_INCLUDE_GIT_HISTORY="${AAB_REPO_CONTEXT_INCLUDE_GIT_HISTORY:-0}"', script)
+        self.assertIn("--repo-context-include-git-history", script)
+        self.assertIn('AAB_REPO_CONTEXT_PYTEST_COLLECT="${AAB_REPO_CONTEXT_PYTEST_COLLECT:-0}"', script)
+        self.assertIn("--repo-context-pytest-collect", script)
+        self.assertIn('METRICS_MIN_SECONDS="${METRICS_MIN_SECONDS:-2}"', script)
+        self.assertIn('sleep "${METRICS_MIN_SECONDS}"', script)
+
+    def test_mini_swe_firecracker_sweep_wrapper_uses_vm_runner_and_collectors(self) -> None:
+        script = Path("bin/run_mini_swe_agent_team_v2_firecracker_sweep_with_metrics.sh").read_text(encoding="utf-8")
+
+        self.assertIn("setup_firecracker_network.sh", script)
+        self.assertIn("--use-firecracker", script)
+        self.assertIn("--fc-rootfs", script)
+        self.assertIn("--fc-kernel", script)
+        self.assertIn("--guest-vllm-base-url", script)
+        self.assertIn("start_cpu_metrics", script)
+        self.assertIn("start_gpu_metrics", script)
+        self.assertIn("start_pcm", script)
+        self.assertIn("refresh_run_metrics", script)
+        self.assertIn("build_sweep_from_child_runs", script)
+
+    def test_mini_swe_guest_worker_uses_python_api_runner(self) -> None:
+        from aab_framework.rootfs import build_mini_swe_guest_worker_script
+
+        script = build_mini_swe_guest_worker_script()
+
+        self.assertIn("OpenAITextModel", script)
+        self.assertIn("LocalEnvironment", script)
+        self.assertIn("DefaultAgent", script)
+        self.assertIn("api_imports_done", script)
+        self.assertIn("import_pydantic_start", script)
+        self.assertIn("import_msa_default_done", script)
+        self.assertIn("urllib.request.urlopen", script)
+        self.assertIn("agent_run_start", script)
+        self.assertIn("agent_run_done", script)
 
     def test_firecracker_network_setup_replaces_existing_bridge_cidr(self) -> None:
         script = Path("bin/setup_firecracker_network.sh").read_text(encoding="utf-8")
