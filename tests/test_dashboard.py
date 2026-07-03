@@ -207,7 +207,7 @@ class DashboardTests(unittest.TestCase):
 
         self.assertEqual(env["AGENTS_LIST"], "1 2 4")
         self.assertEqual(env["AAB_VCPUS_PER_AGENT"], "8")
-        self.assertEqual(env["AAB_LLM_CONTEXT_KB"], "2")
+        self.assertEqual(env["AAB_LLM_CONTEXT_KB"], "32")
 
     def test_start_sweep_returns_status_without_deadlocking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -40,7 +40,7 @@ class SweepLaunchConfig:
     memory_mb: int = 256
     memory_rounds: int = 16
     vcpus_per_agent: int = 8
-    llm_context_kb: int = 2
+    llm_context_kb: int = 32
     llm_prompt_repeat: int = 1
     llm_max_tokens: int = 512
     llm_load_mode: str = "single_task"
@@ -397,7 +397,7 @@ def _make_handler(state: DashboardState) -> type[BaseHTTPRequestHandler]:
                         memory_mb=int(payload.get("memory_mb", 256)),
                         memory_rounds=int(payload.get("memory_rounds", 16)),
                         vcpus_per_agent=int(payload.get("vcpus_per_agent", 8)),
-                        llm_context_kb=int(payload.get("llm_context_kb", 2)),
+                        llm_context_kb=int(payload.get("llm_context_kb", 32)),
                         llm_prompt_repeat=int(payload.get("llm_prompt_repeat", 1)),
                         llm_max_tokens=int(payload.get("llm_max_tokens", 512)),
                         llm_load_mode=str(payload.get("llm_load_mode") or "single_task"),

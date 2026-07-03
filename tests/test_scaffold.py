@@ -343,7 +343,7 @@ class ScaffoldTests(unittest.TestCase):
         self.assertIn('AAB_CPU_PINNING="${AAB_CPU_PINNING:-1}"', script)
         self.assertIn('AAB_NUMA_POLICY="${AAB_NUMA_POLICY:-bind-by-agent}"', script)
         self.assertIn('AAB_MEMORY_MODE="${AAB_MEMORY_MODE:-read}"', script)
-        self.assertIn('AAB_LLM_CONTEXT_KB="${AAB_LLM_CONTEXT_KB:-2}"', script)
+        self.assertIn('AAB_LLM_CONTEXT_KB="${AAB_LLM_CONTEXT_KB:-32}"', script)
         self.assertIn('AAB_LLM_PROMPT_REPEAT="${AAB_LLM_PROMPT_REPEAT:-1}"', script)
         self.assertIn('AAB_LLM_MAX_TOKENS="${AAB_LLM_MAX_TOKENS:-512}"', script)
         self.assertIn('AAB_LLM_LOAD_MODE="${AAB_LLM_LOAD_MODE:-single_task}"', script)
