@@ -467,7 +467,7 @@ function drawHoverTooltip(ctx, hoverIndex, hoverPoint, points, renderedSeries, c
   const rows = renderedSeries.map(({ item, coords }) => ({
     color: item.color,
     label: item.label,
-    value: fmt(coords[hoverIndex] ? coords[hoverIndex].rawValue : 0),
+    value: fmt(coords[hoverIndex] ? coords[hoverIndex].value : 0),
   }));
   const tooltipWidth = Math.min(Math.max(
     ctx.measureText(title).width,

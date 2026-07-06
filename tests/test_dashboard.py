@@ -471,13 +471,19 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("ctx.textAlign = \"right\"", script)
         self.assertIn("maxTickCount", script)
 
+    def test_dashboard_chart_tooltips_use_scaled_values(self) -> None:
+        script = Path("aab_framework/dashboard_static/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("value: fmt(coords[hoverIndex] ? coords[hoverIndex].value : 0)", script)
+        self.assertNotIn("value: fmt(coords[hoverIndex] ? coords[hoverIndex].rawValue : 0)", script)
+
     def test_dashboard_start_sweep_uses_name_field_for_runs(self) -> None:
         html = Path("aab_framework/dashboard_static/index.html").read_text(encoding="utf-8")
         script = Path("aab_framework/dashboard_static/app.js").read_text(encoding="utf-8")
 
         self.assertIn('id="agentsInput" class="control" value="1 2 4 8 16 32 64 128"', html)
         self.assertIn('id="vcpuInput" class="control" type="number" value="8"', html)
-        self.assertIn('id="llmContextKbInput" class="control" type="number" value="2"', html)
+        self.assertIn('id="llmContextKbInput" class="control" type="number" value="32"', html)
         self.assertIn("Name<input id=\"runNameInput\"", html)
         self.assertIn("Context KiB<input id=\"llmContextKbInput\"", html)
         self.assertIn("Prompt repeat<input id=\"llmPromptRepeatInput\"", html)
